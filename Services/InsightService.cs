@@ -1,8 +1,8 @@
-using ApiApp.Data;
-using ApiApp.Models;
+using HrmApi.Data;
+using HrmApi.Models;
 using MongoDB.Driver;
 
-namespace ApiApp.Services;
+namespace HrmApi.Services;
 
 public sealed class InsightService(MongoDbContext db)
 {

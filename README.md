@@ -21,7 +21,7 @@ D:\All Codes\Projects\HRM-Api\
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
-├── ApiApp.csproj
+├── HrmApi.csproj
 ├── Dockerfile
 ├── docker-entrypoint.sh
 ├── appsettings.json
@@ -137,8 +137,8 @@ D:\All Codes\Projects\HRM-Api\
 ConnectionStrings__MongoDB=mongodb://localhost:27017
 MongoDB__Database=HRM-Api
 Auth__JwtKey=your-super-secret-jwt-key-at-least-32-characters-long
-Auth__Issuer=ApiApp
-Auth__Audience=ApiApp
+Auth__Issuer=HrmApi
+Auth__Audience=HrmApi
 ```
 
 ---

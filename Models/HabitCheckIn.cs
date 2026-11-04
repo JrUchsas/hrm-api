@@ -1,7 +1,7 @@
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
 
-namespace ApiApp.Models;
+namespace HrmApi.Models;
 
 public enum CheckInStatus { Missed, Minimum, Completed }
 

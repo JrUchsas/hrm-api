@@ -1,4 +1,4 @@
-namespace ApiApp.Models;
+namespace HrmApi.Models;
 
 public sealed record HabitTodayDto(
     Guid Id,

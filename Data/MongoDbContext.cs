@@ -1,7 +1,7 @@
-using ApiApp.Models;
+using HrmApi.Models;
 using MongoDB.Driver;
 
-namespace ApiApp.Data;
+namespace HrmApi.Data;
 
 public sealed class MongoDbContext
 {

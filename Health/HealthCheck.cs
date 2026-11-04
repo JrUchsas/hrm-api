@@ -1,10 +1,10 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using MongoDB.Bson;
 using MongoDB.Driver;
-using ApiApp.Data;
-using ApiApp.Models;
+using HrmApi.Data;
+using HrmApi.Models;
 
-namespace ApiApp.Health;
+namespace HrmApi.Health;
 
 public sealed class ComprehensiveHealthCheck(
     IMongoClient mongoClient,
@@ -73,8 +73,8 @@ public sealed class ComprehensiveHealthCheck(
         try
         {
             var jwtKey = configuration["Auth:JwtKey"];
-            var issuer = configuration["Auth:Issuer"] ?? "ApiApp";
-            var audience = configuration["Auth:Audience"] ?? "ApiApp";
+            var issuer = configuration["Auth:Issuer"] ?? "HrmApi";
+            var audience = configuration["Auth:Audience"] ?? "HrmApi";
 
             if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
             {
@@ -191,8 +191,8 @@ public sealed class ConfigurationHealthCheck(IConfiguration configuration) : IHe
         data["database_name"] = dbName ?? "hrmdb (default)";
 
         // Issuer/Audience
-        data["issuer"] = configuration["Auth:Issuer"] ?? "ApiApp (default)";
-        data["audience"] = configuration["Auth:Audience"] ?? "ApiApp (default)";
+        data["issuer"] = configuration["Auth:Issuer"] ?? "HrmApi (default)";
+        data["audience"] = configuration["Auth:Audience"] ?? "HrmApi (default)";
 
         return Task.FromResult(errors.Count > 0
             ? HealthCheckResult.Unhealthy(string.Join("; ", errors), data: data)

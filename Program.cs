@@ -1,7 +1,7 @@
-using ApiApp.Data;
-using ApiApp.Health;
-using ApiApp.Models;
-using ApiApp.Services;
+using HrmApi.Data;
+using HrmApi.Health;
+using HrmApi.Models;
+using HrmApi.Services;
 using DotNetEnv;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -43,8 +43,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ValidateAudience = true,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        ValidIssuer = builder.Configuration["Auth:Issuer"] ?? "ApiApp",
-        ValidAudience = builder.Configuration["Auth:Audience"] ?? "ApiApp",
+        ValidIssuer = builder.Configuration["Auth:Issuer"] ?? "HrmApi",
+        ValidAudience = builder.Configuration["Auth:Audience"] ?? "HrmApi",
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
     };
 });

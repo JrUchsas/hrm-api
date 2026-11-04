@@ -3,7 +3,7 @@ using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
 using System;
 
-namespace ApiApp.Models;
+namespace HrmApi.Models;
 
 public sealed class DateOnlySerializer : SerializerBase<DateOnly>
 {
