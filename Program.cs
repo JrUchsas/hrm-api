@@ -6,6 +6,7 @@ using DotNetEnv;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using MongoDB.Driver;
 using System.Security.Claims;
@@ -22,7 +23,12 @@ var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDB")
 builder.Services.AddSingleton<IMongoClient>(_ => new MongoClient(mongoConnectionString));
 builder.Services.AddScoped<MongoDbContext>();
 builder.Services.AddHealthChecks()
-    .AddCheck<MongoDbHealthCheck>("mongodb", tags: new[] { "ready" });
+    // Comprehensive check - everything (for /health endpoint)
+    .AddCheck<ComprehensiveHealthCheck>("comprehensive", tags: new[] { "live", "ready" })
+    // Database only (for /ready endpoint)
+    .AddCheck<DatabaseHealthCheck>("database", tags: new[] { "ready" })
+    // Configuration only (for /config endpoint)
+    .AddCheck<ConfigurationHealthCheck>("configuration", tags: new[] { "config" });
 builder.Services.AddScoped<InsightService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
@@ -59,11 +65,46 @@ using (var scope = app.Services.CreateScope())
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapHealthChecks("/health");
+
+// Liveness probe - full comprehensive check
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("live"),
+    ResponseWriter = WriteHealthResponse
+});
+
+// Readiness probe - database + comprehensive
 app.MapHealthChecks("/ready", new HealthCheckOptions
 {
-    Predicate = check => check.Tags.Contains("ready")
+    Predicate = check => check.Tags.Contains("ready"),
+    ResponseWriter = WriteHealthResponse
 });
+
+// Configuration check - auth/config validation
+app.MapHealthChecks("/config", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("config"),
+    ResponseWriter = WriteHealthResponse
+});
+
+static Task WriteHealthResponse(HttpContext context, HealthReport report)
+{
+    context.Response.ContentType = "application/json";
+    var response = new
+    {
+        status = report.Status.ToString(),
+        totalDuration = report.TotalDuration,
+        checks = report.Entries.Select(e => new
+        {
+            name = e.Key,
+            status = e.Value.Status.ToString(),
+            description = e.Value.Description,
+            duration = e.Value.Duration,
+            data = e.Value.Data
+        })
+    };
+    return context.Response.WriteAsJsonAsync(response);
+}
 
 app.MapPost("/api/auth/register", async (RegisterRequest request, MongoDbContext db, IPasswordHasher<User> hasher, AuthService auth, CancellationToken cancellationToken) =>
 {
