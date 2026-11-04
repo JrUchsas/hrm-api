@@ -1,0 +1,15 @@
+bin/
+obj/
+*.user
+*.userosscache
+.vs/
+.idea/
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+*.log
+.env
+.env.local
+appsettings.json
+appsettings.*.json
