@@ -1,8 +1,10 @@
 using ApiApp.Data;
+using ApiApp.Health;
 using ApiApp.Models;
 using ApiApp.Services;
 using DotNetEnv;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.IdentityModel.Tokens;
 using MongoDB.Driver;
@@ -19,7 +21,8 @@ var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDB")
 
 builder.Services.AddSingleton<IMongoClient>(_ => new MongoClient(mongoConnectionString));
 builder.Services.AddScoped<MongoDbContext>();
-builder.Services.AddHealthChecks();
+builder.Services.AddHealthChecks()
+    .AddCheck<MongoDbHealthCheck>("mongodb", tags: new[] { "ready" });
 builder.Services.AddScoped<InsightService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
@@ -57,7 +60,10 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapHealthChecks("/health");
-app.MapHealthChecks("/ready");
+app.MapHealthChecks("/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 
 app.MapPost("/api/auth/register", async (RegisterRequest request, MongoDbContext db, IPasswordHasher<User> hasher, AuthService auth, CancellationToken cancellationToken) =>
 {
