@@ -34,10 +34,10 @@ public sealed class ComprehensiveHealthCheck(
         try
         {
             var usersCount = await dbContext.Users.CountDocumentsAsync(FilterDefinition<User>.Empty, cancellationToken: cancellationToken);
-            var habitsCount = await dbContext.Habits.CountDocumentsAsync(FilterDefinition<Habit>.Empty, cancellationToken: cancellationToken);
-            var checkInsCount = await dbContext.CheckIns.CountDocumentsAsync(FilterDefinition<HabitCheckIn>.Empty, cancellationToken: cancellationToken);
+            var rolesCount = await dbContext.Roles.CountDocumentsAsync(FilterDefinition<Role>.Empty, cancellationToken: cancellationToken);
+            var permissionsCount = await dbContext.Permissions.CountDocumentsAsync(FilterDefinition<Permission>.Empty, cancellationToken: cancellationToken);
             results["collections_accessible"] = "OK";
-            results["collections_stats"] = new { users = usersCount, habits = habitsCount, checkins = checkInsCount };
+            results["collections_stats"] = new { users = usersCount, roles = rolesCount, permissions = permissionsCount };
         }
         catch (Exception ex)
         {
@@ -49,18 +49,18 @@ public sealed class ComprehensiveHealthCheck(
         try
         {
             var userIndexes = await dbContext.Users.Indexes.ListAsync(cancellationToken: cancellationToken);
-            var habitIndexes = await dbContext.Habits.Indexes.ListAsync(cancellationToken: cancellationToken);
-            var checkInIndexes = await dbContext.CheckIns.Indexes.ListAsync(cancellationToken: cancellationToken);
+            var roleIndexes = await dbContext.Roles.Indexes.ListAsync(cancellationToken: cancellationToken);
+            var permissionIndexes = await dbContext.Permissions.Indexes.ListAsync(cancellationToken: cancellationToken);
 
             var userIndexList = await userIndexes.ToListAsync(cancellationToken);
-            var habitIndexList = await habitIndexes.ToListAsync(cancellationToken);
-            var checkInIndexList = await checkInIndexes.ToListAsync(cancellationToken);
+            var roleIndexList = await roleIndexes.ToListAsync(cancellationToken);
+            var permissionIndexList = await permissionIndexes.ToListAsync(cancellationToken);
 
             results["indexes"] = new
             {
                 users = userIndexList.Count,
-                habits = habitIndexList.Count,
-                checkins = checkInIndexList.Count
+                roles = roleIndexList.Count,
+                permissions = permissionIndexList.Count
             };
         }
         catch (Exception ex)

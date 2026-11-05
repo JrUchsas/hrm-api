@@ -34,22 +34,6 @@ public sealed class RbacSeedService(MongoDbContext db)
             // Permission management
             new() { Resource = "permissions", Action = "read", Description = "Read permission information" },
 
-            // Habits
-            new() { Resource = "habits", Action = "read", Description = "Read habits" },
-            new() { Resource = "habits", Action = "create", Description = "Create habits" },
-            new() { Resource = "habits", Action = "update", Description = "Update habits" },
-            new() { Resource = "habits", Action = "delete", Description = "Delete habits" },
-
-            // Check-ins
-            new() { Resource = "checkins", Action = "read", Description = "Read check-ins" },
-            new() { Resource = "checkins", Action = "create", Description = "Create check-ins" },
-            new() { Resource = "checkins", Action = "update", Description = "Update check-ins" },
-            new() { Resource = "checkins", Action = "delete", Description = "Delete check-ins" },
-
-            // Insights/Reports
-            new() { Resource = "insights", Action = "read", Description = "Read insights and reports" },
-            new() { Resource = "insights", Action = "export", Description = "Export insights data" },
-
             // Profile
             new() { Resource = "profile", Action = "read", Description = "Read own profile" },
             new() { Resource = "profile", Action = "update", Description = "Update own profile" },
@@ -112,24 +96,12 @@ public sealed class RbacSeedService(MongoDbContext db)
                 "users.update",
                 "roles.read",
                 "permissions.read",
-                "habits.read",
-                "habits.create",
-                "habits.update",
-                "checkins.read",
-                "checkins.create",
-                "checkins.update",
-                "insights.read",
-                "insights.export",
                 "profile.read",
                 "profile.update",
                 "system.health",
             },
             ["user"] = new()
             {
-                "habits.read",
-                "habits.create",
-                "checkins.read",
-                "checkins.create",
                 "profile.read",
                 "profile.update",
             },

@@ -14,8 +14,6 @@ public sealed class MongoDbContext
     }
 
     public IMongoCollection<User> Users => _database.GetCollection<User>("users");
-    public IMongoCollection<Habit> Habits => _database.GetCollection<Habit>("habits");
-    public IMongoCollection<HabitCheckIn> CheckIns => _database.GetCollection<HabitCheckIn>("checkins");
     public IMongoCollection<Role> Roles => _database.GetCollection<Role>("roles");
     public IMongoCollection<Permission> Permissions => _database.GetCollection<Permission>("permissions");
     public IMongoCollection<UserRole> UserRoles => _database.GetCollection<UserRole>("user_roles");
@@ -60,13 +58,5 @@ public sealed class MongoDbContext
         await RefreshTokens.Indexes.CreateOneAsync(new CreateIndexModel<RefreshToken>(refreshTokenUserIndex));
         var refreshTokenExpiryIndex = Builders<RefreshToken>.IndexKeys.Ascending(rt => rt.ExpiresAt);
         await RefreshTokens.Indexes.CreateOneAsync(new CreateIndexModel<RefreshToken>(refreshTokenExpiryIndex));
-
-        // Habits indexes
-        var habitUserIndexKeys = Builders<Habit>.IndexKeys.Ascending(h => h.UserId).Ascending(h => h.IsActive).Ascending(h => h.CreatedAt);
-        await Habits.Indexes.CreateOneAsync(new CreateIndexModel<Habit>(habitUserIndexKeys));
-
-        // CheckIns indexes
-        var checkInIndexKeys = Builders<HabitCheckIn>.IndexKeys.Ascending(c => c.HabitId).Ascending(c => c.Date);
-        await CheckIns.Indexes.CreateOneAsync(new CreateIndexModel<HabitCheckIn>(checkInIndexKeys, new CreateIndexOptions { Unique = true }));
     }
 }
