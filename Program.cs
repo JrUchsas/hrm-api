@@ -74,8 +74,10 @@ using (var scope = app.Services.CreateScope())
     await db.DropCollectionAsync("habits");
     await db.DropCollectionAsync("checkins");
 
-    // Drop and recreate users collection to handle schema migration
+    // Drop RBAC collections to ensure clean seed on each startup
     await db.DropCollectionAsync("users");
+    await db.DropCollectionAsync("user_roles");
+    await db.DropCollectionAsync("role_permissions");
 
     var dbContext = scope.ServiceProvider.GetRequiredService<MongoDbContext>();
     await dbContext.CreateIndexesAsync();
