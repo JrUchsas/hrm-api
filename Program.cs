@@ -70,6 +70,10 @@ using (var scope = app.Services.CreateScope())
     var client = scope.ServiceProvider.GetRequiredService<IMongoClient>();
     var db = client.GetDatabase("hrmdb");
 
+    // Drop legacy collections (habits, checkins) that are no longer used
+    await db.DropCollectionAsync("habits");
+    await db.DropCollectionAsync("checkins");
+
     // Drop and recreate users collection to handle schema migration
     await db.DropCollectionAsync("users");
 
