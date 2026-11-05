@@ -18,6 +18,25 @@ public sealed class User
     [BsonElement("goal")]
     public string? Goal { get; set; }
 
+    [BsonElement("status")]
+    public UserStatus Status { get; set; } = UserStatus.Active;
+
+    [BsonElement("emailVerified")]
+    public bool EmailVerified { get; set; } = false;
+
+    [BsonElement("lastLoginAt")]
+    public DateTimeOffset? LastLoginAt { get; set; }
+
     [BsonElement("createdAt")]
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    [BsonElement("updatedAt")]
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public enum UserStatus
+{
+    Active = 1,
+    Suspended = 2,
+    Deleted = 3
 }

@@ -1,12 +1,15 @@
 using HrmApi.Data;
+using HrmApi.Endpoints;
 using HrmApi.Health;
 using HrmApi.Models;
 using HrmApi.Services;
 using DotNetEnv;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using MongoDB.Driver;
 using System.Security.Claims;
@@ -23,16 +26,21 @@ var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDB")
 builder.Services.AddSingleton<IMongoClient>(_ => new MongoClient(mongoConnectionString));
 builder.Services.AddScoped<MongoDbContext>();
 builder.Services.AddHealthChecks()
-    // Comprehensive check - everything (for /health endpoint)
-    .AddCheck<ComprehensiveHealthCheck>("comprehensive", tags: new[] { "live", "ready" })
-    // Database only (for /ready endpoint)
-    .AddCheck<DatabaseHealthCheck>("database", tags: new[] { "ready" })
-    // Configuration only (for /config endpoint)
-    .AddCheck<ConfigurationHealthCheck>("configuration", tags: new[] { "config" });
+    .AddCheck<ComprehensiveHealthCheck>("comprehensive", tags: ["live", "ready"])
+    .AddCheck<DatabaseHealthCheck>("database", tags: ["ready"])
+    .AddCheck<ConfigurationHealthCheck>("configuration", tags: ["config"]);
+
 builder.Services.AddScoped<InsightService>();
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<PermissionService>();
+builder.Services.AddScoped<RbacSeedService>();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddHttpClient();
+
+// Register RBAC authorization handler and policies
+builder.Services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
+builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
+builder.Services.AddRbacAuthorization();
 
 var jwtKey = builder.Configuration["Auth:JwtKey"] ?? throw new InvalidOperationException("Auth:JwtKey is required.");
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
@@ -45,9 +53,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ValidateIssuerSigningKey = true,
         ValidIssuer = builder.Configuration["Auth:Issuer"] ?? "HrmApi",
         ValidAudience = builder.Configuration["Auth:Audience"] ?? "HrmApi",
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+        ClockSkew = TimeSpan.FromMinutes(1)
     };
 });
+
 builder.Services.AddAuthorization();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
     policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
@@ -55,7 +65,7 @@ builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.C
 
 var app = builder.Build();
 
-// Create MongoDB indexes on startup
+// Create MongoDB indexes and seed RBAC data on startup
 using (var scope = app.Services.CreateScope())
 {
     var client = scope.ServiceProvider.GetRequiredService<IMongoClient>();
@@ -66,27 +76,29 @@ using (var scope = app.Services.CreateScope())
 
     var dbContext = scope.ServiceProvider.GetRequiredService<MongoDbContext>();
     await dbContext.CreateIndexesAsync();
+
+    // Seed RBAC data
+    var seedService = scope.ServiceProvider.GetRequiredService<RbacSeedService>();
+    await seedService.SeedAsync();
 }
 
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Liveness probe - full comprehensive check
+// Health check endpoints
 app.MapHealthChecks("/health", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("live"),
     ResponseWriter = WriteHealthResponse
 });
 
-// Readiness probe - database + comprehensive
 app.MapHealthChecks("/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("ready"),
     ResponseWriter = WriteHealthResponse
 });
 
-// Configuration check - auth/config validation
 app.MapHealthChecks("/config", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("config"),
@@ -112,127 +124,121 @@ static Task WriteHealthResponse(HttpContext context, HealthReport report)
     return context.Response.WriteAsJsonAsync(response);
 }
 
-app.MapPost("/api/auth/register", async (RegisterRequest request, MongoDbContext db, IPasswordHasher<User> hasher, AuthService auth, CancellationToken cancellationToken) =>
-{
-    var email = request.Email.Trim().ToLowerInvariant();
-    if (!IsValidEmail(email)) return Results.BadRequest("Invalid email format.");
-    if (request.Password.Length < 8) return Results.BadRequest("Password must be at least 8 characters.");
-    if (await db.Users.Find(u => u.Email == email).AnyAsync(cancellationToken)) return Results.Conflict("Email is already in use.");
-    var user = new User { Email = email, PasswordHash = "pending", Goal = request.Goal?.Trim() };
-    user.PasswordHash = hasher.HashPassword(user, request.Password);
-    await db.Users.InsertOneAsync(user, cancellationToken: cancellationToken);
-    return Results.Ok(new AuthResponse(auth.CreateToken(user), user.Email));
-}).WithName("Register");
+// Map authentication endpoints
+app.MapAuthEndpoints();
 
-app.MapPost("/api/auth/login", async (LoginRequest request, MongoDbContext db, IPasswordHasher<User> hasher, AuthService auth, CancellationToken cancellationToken) =>
-{
-    var email = request.Email.Trim().ToLowerInvariant();
-    var user = await db.Users.Find(u => u.Email == email).FirstOrDefaultAsync(cancellationToken);
-    if (user is null || hasher.VerifyHashedPassword(user, user.PasswordHash, request.Password) == PasswordVerificationResult.Failed) return Results.Unauthorized();
-    return Results.Ok(new AuthResponse(auth.CreateToken(user), user.Email));
-}).WithName("Login");
+// Map RBAC endpoints
+app.MapRbacEndpoints();
 
-app.MapGet("/api/auth/me", (ClaimsPrincipal user) => Results.Ok(new { Email = user.Identity?.Name }))
-    .RequireAuthorization().WithName("CurrentUser");
+// Map existing API endpoints (habits, check-ins, insights, profile)
+MapApiEndpoints(app);
 
-app.MapGet("/api/profile", async (ClaimsPrincipal user, MongoDbContext db, CancellationToken cancellationToken) =>
-{
-    var userId = UserId(user);
-    var profile = await db.Users.Find(u => u.Id == userId).FirstOrDefaultAsync(cancellationToken);
-    return profile is null ? Results.NotFound() : Results.Ok(new { profile.Email, profile.Goal });
-}).RequireAuthorization().WithName("GetProfile");
+app.Run();
 
-app.MapPut("/api/profile", async (ClaimsPrincipal user, UpdateProfileRequest request, MongoDbContext db, CancellationToken cancellationToken) =>
+static void MapApiEndpoints(WebApplication app)
 {
-    var userId = UserId(user);
-    var profile = await db.Users.Find(u => u.Id == userId).FirstOrDefaultAsync(cancellationToken);
-    if (profile is null) return Results.NotFound();
-    if (request.Goal?.Length > 500) return Results.BadRequest("Goal must be 500 characters or fewer.");
-    profile.Goal = string.IsNullOrWhiteSpace(request.Goal) ? null : request.Goal.Trim();
-    await db.Users.ReplaceOneAsync(u => u.Id == userId, profile, cancellationToken: cancellationToken);
-    return Results.Ok(new { profile.Email, profile.Goal });
-}).RequireAuthorization().WithName("UpdateProfile");
+    // Profile endpoints
+    app.MapGet("/api/profile", async (ClaimsPrincipal user, MongoDbContext db, CancellationToken cancellationToken) =>
+    {
+        var userId = UserId(user);
+        var profile = await db.Users.Find(u => u.Id == userId).FirstOrDefaultAsync(cancellationToken);
+        return profile is null ? Results.NotFound() : Results.Ok(new { profile.Email, profile.Goal });
+    }).RequireAuthorization().WithName("GetProfile");
 
-app.MapGet("/api/habits", async (ClaimsPrincipal user, MongoDbContext db, CancellationToken cancellationToken) =>
-{
-    var userId = UserId(user);
-    return Results.Ok(await db.Habits.Find(h => h.UserId == userId && h.IsActive).SortBy(h => h.CreatedAt).ToListAsync(cancellationToken));
-})
+    app.MapPut("/api/profile", async (ClaimsPrincipal user, UpdateProfileRequest request, MongoDbContext db, CancellationToken cancellationToken) =>
+    {
+        var userId = UserId(user);
+        var profile = await db.Users.Find(u => u.Id == userId).FirstOrDefaultAsync(cancellationToken);
+        if (profile is null) return Results.NotFound();
+        if (request.Goal?.Length > 500) return Results.BadRequest("Goal must be 500 characters or fewer.");
+        profile.Goal = string.IsNullOrWhiteSpace(request.Goal) ? null : request.Goal.Trim();
+        profile.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.Users.ReplaceOneAsync(u => u.Id == userId, profile, cancellationToken: cancellationToken);
+        return Results.Ok(new { profile.Email, profile.Goal });
+    }).RequireAuthorization().WithName("UpdateProfile");
+
+    // Habits endpoints
+    app.MapGet("/api/habits", async (ClaimsPrincipal user, MongoDbContext db, CancellationToken cancellationToken) =>
+    {
+        var userId = UserId(user);
+        return Results.Ok(await db.Habits.Find(h => h.UserId == userId && h.IsActive).SortBy(h => h.CreatedAt).ToListAsync(cancellationToken));
+    })
     .RequireAuthorization()
     .WithName("ListHabits");
 
-app.MapGet("/api/dashboard", async (ClaimsPrincipal user, MongoDbContext db, DateOnly? date, CancellationToken cancellationToken) =>
-{
-    var day = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
-    var userId = UserId(user);
-    var habits = await db.Habits.Find(h => h.UserId == userId && h.IsActive).SortBy(h => h.CreatedAt).ToListAsync(cancellationToken);
-    var checkIns = await db.CheckIns.Find(c => c.Date == day).ToListAsync(cancellationToken);
-    var checkInDict = checkIns.Where(c => habits.Any(h => h.Id == c.HabitId)).ToDictionary(c => c.HabitId);
-    return Results.Ok(habits.Select(h => new HabitTodayDto(h.Id, h.Name, h.Unit, h.Schedule, h.TargetValue, h.MinimumValue, checkInDict.GetValueOrDefault(h.Id))));
-}).RequireAuthorization().WithName("GetDashboard");
-
-app.MapGet("/api/insights", async (ClaimsPrincipal user, InsightService insights, int? days, CancellationToken cancellationToken) =>
-    Results.Ok(await insights.GetInsightsAsync(UserId(user), Math.Clamp(days ?? 28, 7, 90), cancellationToken))).RequireAuthorization().WithName("GetInsights");
-
-app.MapPost("/api/habits", async (ClaimsPrincipal user, CreateHabitRequest request, MongoDbContext db, CancellationToken cancellationToken) =>
-{
-    if (string.IsNullOrWhiteSpace(request.Name) || request.TargetValue <= 0 || request.MinimumValue <= 0 || request.MinimumValue > request.TargetValue)
-        return Results.BadRequest("Name is required and minimum value must be positive and no greater than the target.");
-
-    var habit = new Habit
+    app.MapGet("/api/dashboard", async (ClaimsPrincipal user, MongoDbContext db, DateOnly? date, CancellationToken cancellationToken) =>
     {
-        Name = request.Name.Trim(), Description = request.Description?.Trim(), Unit = request.Unit.Trim(), Schedule = request.Schedule.Trim(),
-        TargetValue = request.TargetValue, MinimumValue = request.MinimumValue, UserId = UserId(user)
-    };
-    await db.Habits.InsertOneAsync(habit, cancellationToken: cancellationToken);
-    return Results.Created($"/api/habits/{habit.Id}", habit);
-}).RequireAuthorization().WithName("CreateHabit");
+        var day = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
+        var userId = UserId(user);
+        var habits = await db.Habits.Find(h => h.UserId == userId && h.IsActive).SortBy(h => h.CreatedAt).ToListAsync(cancellationToken);
+        var checkIns = await db.CheckIns.Find(c => c.Date == day).ToListAsync(cancellationToken);
+        var checkInDict = checkIns.Where(c => habits.Any(h => h.Id == c.HabitId)).ToDictionary(c => c.HabitId);
+        return Results.Ok(habits.Select(h => new HabitTodayDto(h.Id, h.Name, h.Unit, h.Schedule, h.TargetValue, h.MinimumValue, checkInDict.GetValueOrDefault(h.Id))));
+    }).RequireAuthorization().WithName("GetDashboard");
 
-app.MapPost("/api/habits/{habitId:guid}/check-ins", async (ClaimsPrincipal user, Guid habitId, CreateCheckInRequest request, MongoDbContext db, CancellationToken cancellationToken) =>
-{
-    var userId = UserId(user);
-    var habit = await db.Habits.Find(h => h.Id == habitId && h.UserId == userId && h.IsActive).FirstOrDefaultAsync(cancellationToken);
-    if (habit is null) return Results.NotFound();
-    if (request.CompletedValue < 0) return Results.BadRequest("Completed value cannot be negative.");
+    app.MapGet("/api/insights", async (ClaimsPrincipal user, InsightService insights, int? days, CancellationToken cancellationToken) =>
+        Results.Ok(await insights.GetInsightsAsync(UserId(user), Math.Clamp(days ?? 28, 7, 90), cancellationToken))).RequireAuthorization().WithName("GetInsights");
 
-    var existingCheckIn = await db.CheckIns.Find(c => c.HabitId == habitId && c.Date == request.Date).FirstOrDefaultAsync(cancellationToken);
-    var status = request.CompletedValue >= habit.TargetValue ? CheckInStatus.Completed : request.CompletedValue >= habit.MinimumValue ? CheckInStatus.Minimum : CheckInStatus.Missed;
-
-    var checkIn = existingCheckIn ?? new HabitCheckIn
+    app.MapPost("/api/habits", async (ClaimsPrincipal user, CreateHabitRequest request, MongoDbContext db, CancellationToken cancellationToken) =>
     {
-        HabitId = habitId,
-        Date = request.Date,
-        CompletedValue = request.CompletedValue,
-        Status = status,
-        Obstacle = request.Obstacle?.Trim(),
-        Notes = request.Notes?.Trim()
-    };
+        if (string.IsNullOrWhiteSpace(request.Name) || request.TargetValue <= 0 || request.MinimumValue <= 0 || request.MinimumValue > request.TargetValue)
+            return Results.BadRequest("Name is required and minimum value must be positive and no greater than the target.");
 
-    if (existingCheckIn != null)
-    {
-        checkIn.CompletedValue = request.CompletedValue;
-        checkIn.Status = status;
-        checkIn.Obstacle = request.Obstacle?.Trim();
-        checkIn.Notes = request.Notes?.Trim();
-        await db.CheckIns.ReplaceOneAsync(c => c.Id == checkIn.Id, checkIn, cancellationToken: cancellationToken);
-    }
-    else
-    {
-        await db.CheckIns.InsertOneAsync(checkIn, cancellationToken: cancellationToken);
-    }
+        var habit = new Habit
+        {
+            Name = request.Name.Trim(), Description = request.Description?.Trim(), Unit = request.Unit.Trim(), Schedule = request.Schedule.Trim(),
+            TargetValue = request.TargetValue, MinimumValue = request.MinimumValue, UserId = UserId(user)
+        };
+        await db.Habits.InsertOneAsync(habit, cancellationToken: cancellationToken);
+        return Results.Created($"/api/habits/{habit.Id}", habit);
+    }).RequireAuthorization().WithName("CreateHabit");
 
-    return Results.Created($"/api/check-ins/{checkIn.Id}", new
+    app.MapPost("/api/habits/{habitId:guid}/check-ins", async (ClaimsPrincipal user, Guid habitId, CreateCheckInRequest request, MongoDbContext db, CancellationToken cancellationToken) =>
     {
-        checkIn.Id,
-        checkIn.HabitId,
-        checkIn.Date,
-        checkIn.CompletedValue,
-        checkIn.Status,
-        checkIn.Obstacle,
-        checkIn.Notes,
-        checkIn.CreatedAt
-    });
-}).RequireAuthorization().WithName("CreateCheckIn");
+        var userId = UserId(user);
+        var habit = await db.Habits.Find(h => h.Id == habitId && h.UserId == userId && h.IsActive).FirstOrDefaultAsync(cancellationToken);
+        if (habit is null) return Results.NotFound();
+        if (request.CompletedValue < 0) return Results.BadRequest("Completed value cannot be negative.");
+
+        var existingCheckIn = await db.CheckIns.Find(c => c.HabitId == habitId && c.Date == request.Date).FirstOrDefaultAsync(cancellationToken);
+        var status = request.CompletedValue >= habit.TargetValue ? CheckInStatus.Completed : request.CompletedValue >= habit.MinimumValue ? CheckInStatus.Minimum : CheckInStatus.Missed;
+
+        var checkIn = existingCheckIn ?? new HabitCheckIn
+        {
+            HabitId = habitId,
+            Date = request.Date,
+            CompletedValue = request.CompletedValue,
+            Status = status,
+            Obstacle = request.Obstacle?.Trim(),
+            Notes = request.Notes?.Trim()
+        };
+
+        if (existingCheckIn != null)
+        {
+            checkIn.CompletedValue = request.CompletedValue;
+            checkIn.Status = status;
+            checkIn.Obstacle = request.Obstacle?.Trim();
+            checkIn.Notes = request.Notes?.Trim();
+            await db.CheckIns.ReplaceOneAsync(c => c.Id == checkIn.Id, checkIn, cancellationToken: cancellationToken);
+        }
+        else
+        {
+            await db.CheckIns.InsertOneAsync(checkIn, cancellationToken: cancellationToken);
+        }
+
+        return Results.Created($"/api/check-ins/{checkIn.Id}", new
+        {
+            checkIn.Id,
+            checkIn.HabitId,
+            checkIn.Date,
+            checkIn.CompletedValue,
+            checkIn.Status,
+            checkIn.Obstacle,
+            checkIn.Notes,
+            checkIn.CreatedAt
+        });
+    }).RequireAuthorization().WithName("CreateCheckIn");
+}
 
 static Guid UserId(ClaimsPrincipal user) => Guid.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub") ?? throw new UnauthorizedAccessException());
 
@@ -249,11 +255,8 @@ static bool IsValidEmail(string email)
     }
 }
 
-app.Run();
-
-public record RegisterRequest(string Email, string Password, string? Goal);
-public record LoginRequest(string Email, string Password);
+// Request/Response DTOs for API endpoints
 public record UpdateProfileRequest(string? Goal);
-public record AuthResponse(string Token, string Email);
 public record CreateHabitRequest(string Name, string Unit, int TargetValue, int MinimumValue, string Schedule, string? Description);
 public record CreateCheckInRequest(DateOnly Date, int CompletedValue, int TargetValue, string? Obstacle, string? Notes);
+public record HabitTodayDto(Guid Id, string Name, string Unit, string Schedule, int TargetValue, int MinimumValue, HabitCheckIn? CheckIn);
