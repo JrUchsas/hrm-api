@@ -19,9 +19,10 @@ public sealed class MongoDbContext
 
     public async Task CreateIndexesAsync()
     {
-        // Users indexes
-        var userIndexKeys = Builders<User>.IndexKeys.Ascending(u => u.Username);
-        await Users.Indexes.CreateOneAsync(new CreateIndexModel<User>(userIndexKeys, new CreateIndexOptions { Unique = true }));
+        // Users indexes - use sparse index to allow documents without email field during migration
+        var userIndexKeys = Builders<User>.IndexKeys.Ascending(u => u.Email);
+        var sparseOptions = new CreateIndexOptions { Unique = true, Sparse = true };
+        await Users.Indexes.CreateOneAsync(new CreateIndexModel<User>(userIndexKeys, sparseOptions));
 
         // Habits indexes
         var habitUserIndexKeys = Builders<Habit>.IndexKeys.Ascending(h => h.UserId).Ascending(h => h.IsActive).Ascending(h => h.CreatedAt);

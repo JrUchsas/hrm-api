@@ -9,8 +9,8 @@ public sealed class User
     [BsonRepresentation(BsonType.String)]
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    [BsonElement("username")]
-    public required string Username { get; set; }
+    [BsonElement("email")]
+    public required string Email { get; set; }
 
     [BsonElement("passwordHash")]
     public required string PasswordHash { get; set; }

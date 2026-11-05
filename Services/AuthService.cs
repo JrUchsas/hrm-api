@@ -12,7 +12,12 @@ public sealed class AuthService(IConfiguration configuration)
     {
         var key = configuration["Auth:JwtKey"];
         if (string.IsNullOrWhiteSpace(key) || key.Length < 32) throw new InvalidOperationException("Auth:JwtKey must be at least 32 characters.");
-        var claims = new[] { new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()), new Claim(ClaimTypes.Name, user.Username) };
+        var claims = new[]
+        {
+            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new Claim(ClaimTypes.Name, user.Email),
+            new Claim(ClaimTypes.Email, user.Email)
+        };
         var credentials = new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)), SecurityAlgorithms.HmacSha256);
         var token = new JwtSecurityToken(configuration["Auth:Issuer"] ?? "HrmApi", configuration["Auth:Audience"] ?? "HrmApi", claims, expires: DateTime.UtcNow.AddDays(14), signingCredentials: credentials);
         return new JwtSecurityTokenHandler().WriteToken(token);

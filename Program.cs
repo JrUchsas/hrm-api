@@ -58,6 +58,12 @@ var app = builder.Build();
 // Create MongoDB indexes on startup
 using (var scope = app.Services.CreateScope())
 {
+    var client = scope.ServiceProvider.GetRequiredService<IMongoClient>();
+    var db = client.GetDatabase("hrmdb");
+
+    // Drop and recreate users collection to handle schema migration
+    await db.DropCollectionAsync("users");
+
     var dbContext = scope.ServiceProvider.GetRequiredService<MongoDbContext>();
     await dbContext.CreateIndexesAsync();
 }
@@ -108,31 +114,32 @@ static Task WriteHealthResponse(HttpContext context, HealthReport report)
 
 app.MapPost("/api/auth/register", async (RegisterRequest request, MongoDbContext db, IPasswordHasher<User> hasher, AuthService auth, CancellationToken cancellationToken) =>
 {
-    var username = request.Username.Trim().ToLowerInvariant();
-    if (username.Length is < 3 or > 50 || request.Password.Length < 8) return Results.BadRequest("Username must be 3-50 characters and password must be at least 8 characters.");
-    if (await db.Users.Find(u => u.Username == username).AnyAsync(cancellationToken)) return Results.Conflict("Username is already in use.");
-    var user = new User { Username = username, PasswordHash = "pending", Goal = request.Goal?.Trim() };
+    var email = request.Email.Trim().ToLowerInvariant();
+    if (!IsValidEmail(email)) return Results.BadRequest("Invalid email format.");
+    if (request.Password.Length < 8) return Results.BadRequest("Password must be at least 8 characters.");
+    if (await db.Users.Find(u => u.Email == email).AnyAsync(cancellationToken)) return Results.Conflict("Email is already in use.");
+    var user = new User { Email = email, PasswordHash = "pending", Goal = request.Goal?.Trim() };
     user.PasswordHash = hasher.HashPassword(user, request.Password);
     await db.Users.InsertOneAsync(user, cancellationToken: cancellationToken);
-    return Results.Ok(new AuthResponse(auth.CreateToken(user), user.Username));
+    return Results.Ok(new AuthResponse(auth.CreateToken(user), user.Email));
 }).WithName("Register");
 
 app.MapPost("/api/auth/login", async (LoginRequest request, MongoDbContext db, IPasswordHasher<User> hasher, AuthService auth, CancellationToken cancellationToken) =>
 {
-    var username = request.Username.Trim().ToLowerInvariant();
-    var user = await db.Users.Find(u => u.Username == username).FirstOrDefaultAsync(cancellationToken);
+    var email = request.Email.Trim().ToLowerInvariant();
+    var user = await db.Users.Find(u => u.Email == email).FirstOrDefaultAsync(cancellationToken);
     if (user is null || hasher.VerifyHashedPassword(user, user.PasswordHash, request.Password) == PasswordVerificationResult.Failed) return Results.Unauthorized();
-    return Results.Ok(new AuthResponse(auth.CreateToken(user), user.Username));
+    return Results.Ok(new AuthResponse(auth.CreateToken(user), user.Email));
 }).WithName("Login");
 
-app.MapGet("/api/auth/me", (ClaimsPrincipal user) => Results.Ok(new { Username = user.Identity?.Name }))
+app.MapGet("/api/auth/me", (ClaimsPrincipal user) => Results.Ok(new { Email = user.Identity?.Name }))
     .RequireAuthorization().WithName("CurrentUser");
 
 app.MapGet("/api/profile", async (ClaimsPrincipal user, MongoDbContext db, CancellationToken cancellationToken) =>
 {
     var userId = UserId(user);
     var profile = await db.Users.Find(u => u.Id == userId).FirstOrDefaultAsync(cancellationToken);
-    return profile is null ? Results.NotFound() : Results.Ok(new { profile.Username, profile.Goal });
+    return profile is null ? Results.NotFound() : Results.Ok(new { profile.Email, profile.Goal });
 }).RequireAuthorization().WithName("GetProfile");
 
 app.MapPut("/api/profile", async (ClaimsPrincipal user, UpdateProfileRequest request, MongoDbContext db, CancellationToken cancellationToken) =>
@@ -143,7 +150,7 @@ app.MapPut("/api/profile", async (ClaimsPrincipal user, UpdateProfileRequest req
     if (request.Goal?.Length > 500) return Results.BadRequest("Goal must be 500 characters or fewer.");
     profile.Goal = string.IsNullOrWhiteSpace(request.Goal) ? null : request.Goal.Trim();
     await db.Users.ReplaceOneAsync(u => u.Id == userId, profile, cancellationToken: cancellationToken);
-    return Results.Ok(new { profile.Username, profile.Goal });
+    return Results.Ok(new { profile.Email, profile.Goal });
 }).RequireAuthorization().WithName("UpdateProfile");
 
 app.MapGet("/api/habits", async (ClaimsPrincipal user, MongoDbContext db, CancellationToken cancellationToken) =>
@@ -227,13 +234,26 @@ app.MapPost("/api/habits/{habitId:guid}/check-ins", async (ClaimsPrincipal user,
     });
 }).RequireAuthorization().WithName("CreateCheckIn");
 
-app.Run();
-
 static Guid UserId(ClaimsPrincipal user) => Guid.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub") ?? throw new UnauthorizedAccessException());
 
-public record RegisterRequest(string Username, string Password, string? Goal);
-public record LoginRequest(string Username, string Password);
+static bool IsValidEmail(string email)
+{
+    try
+    {
+        var addr = new System.Net.Mail.MailAddress(email);
+        return addr.Address == email;
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+app.Run();
+
+public record RegisterRequest(string Email, string Password, string? Goal);
+public record LoginRequest(string Email, string Password);
 public record UpdateProfileRequest(string? Goal);
-public record AuthResponse(string Token, string Username);
+public record AuthResponse(string Token, string Email);
 public record CreateHabitRequest(string Name, string Unit, int TargetValue, int MinimumValue, string Schedule, string? Description);
 public record CreateCheckInRequest(DateOnly Date, int CompletedValue, int TargetValue, string? Obstacle, string? Notes);
