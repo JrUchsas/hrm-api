@@ -21,6 +21,10 @@ Env.Load(); // Load .env file
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Bind to PORT env var (Render, Heroku, etc.) or default to 8080
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+builder.WebHost.UseUrls($"http://*:{port}");
+
 var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDB");
 if (string.IsNullOrWhiteSpace(mongoConnectionString))
 {
