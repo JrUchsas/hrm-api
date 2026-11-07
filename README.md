@@ -14,7 +14,6 @@ A high-performance, secure .NET 10 Minimal API microservice providing enterprise
 - **Email Delivery**: Abstraction layer supporting **Mailtrap** (SMTP for development) and **Mailgun** (REST API for production)
 - **Rate Limiting**: Built-in fixed-window rate limiting on sensitive authentication routes (`Microsoft.AspNetCore.RateLimiting`)
 - **Health Checks**: Enterprise diagnostics with MongoDB connectivity, collection checks, index verification, and JWT validation
-- **Testing**: xUnit with `Mongo2Go` in-memory database and `Microsoft.AspNetCore.Mvc.Testing`
 
 ---
 
@@ -55,14 +54,6 @@ d:\All Codes\Projects\
 │   │   └── MailgunEmailService.cs        # Mailgun HTTP API service implementation
 │   └── Health\
 │       └── HealthCheck.cs                # Diagnostics for MongoDB, collections, and JWT
-│
-└── HRM-Api.Tests\                        # Integration & Unit Test Suite
-    ├── HRM-Api.Tests.csproj              # Test project file (net10.0)
-    ├── TestBase.cs                       # Test fixture with Mongo2Go runner
-    ├── TestWebApplicationFactory.cs     # Custom WebApplicationFactory for API testing
-    ├── TestEmailService.cs               # Mock email service for test assertions
-    ├── AuthEndpointsTests.cs             # 19 integration tests for /api/auth routes
-    └── PasswordResetTokenServiceTests.cs # 10 unit tests for reset token lifecycle
 ```
 
 ---
@@ -177,7 +168,7 @@ d:\All Codes\Projects\
 
 ## 👥 Default Seeded Users & Test Credentials
 
-The database automatically seeds the following users and role assignments on application startup:
+The database automatically seeds the following users and role assignments on application startup (idempotent — safe to run multiple times):
 
 | Role | Email | Password | User ID | Goal / Title |
 | :--- | :--- | :--- | :--- | :--- |
@@ -186,6 +177,8 @@ The database automatically seeds the following users and role assignments on app
 | **User 1** | `user1@company.com` | `UserPass123!` | `6ad3da0e-3b91-4657-85d0-258a29f25df3` | Employee User 1 |
 | **User 2** | `user2@company.com` | `UserPass123!` | `37a4d393-814d-495e-9930-772d704660af` | Employee User 2 |
 | **User 3** | `user3@company.com` | `UserPass123!` | `813407fd-da7a-4fdb-8aeb-097744f994ad` | Employee User 3 |
+
+> **Note**: These are seeded automatically when the app starts against an empty database. In production, use the `/api/rbac/bootstrap/superadmin` endpoint to create your first admin, then manage users via the RBAC endpoints.
 
 ---
 
@@ -206,13 +199,13 @@ The database automatically seeds the following users and role assignments on app
 ```json
 {
   "ConnectionStrings": {
-    "MongoDB": "mongodb://localhost:27017"
+    "MongoDB": ""
   },
   "MongoDB": {
     "Database": "hrmdb"
   },
   "Auth": {
-    "JwtKey": "REPLACE_WITH_SECURE_KEY_AT_LEAST_32_CHARS_IN_PRODUCTION",
+    "JwtKey": "",
     "Issuer": "HrmApi",
     "Audience": "HrmApi"
   },
@@ -233,13 +226,20 @@ The database automatically seeds the following users and role assignments on app
   },
   "App": {
     "FrontendUrl": "http://localhost:3000"
-  }
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
 }
 ```
 
 ### Environment Variables (`.env`)
 ```env
-ConnectionStrings__MongoDB=mongodb://localhost:27017
+ConnectionStrings__MongoDB=mongodb+srv://user:pass@cluster.mongodb.net/hrmdb
 MongoDB__Database=hrmdb
 Auth__JwtKey=your-super-secret-jwt-key-at-least-32-characters-long
 Auth__Issuer=HrmApi
@@ -256,25 +256,7 @@ Email__Mailgun__ApiKey=your-mailgun-api-key
 App__FrontendUrl=http://localhost:3000
 ```
 
----
-
-## 🧪 Testing
-
-The solution includes an automated integration and unit test suite built with **xUnit** and **Mongo2Go**:
-
-```bash
-# Run all tests
-dotnet test "d:/All Codes/Projects/HRM-Api.Tests/HRM-Api.Tests.csproj"
-```
-
-All 34 tests verify:
-- Pre-seeded default users authentication and role resolution
-- Registration, Login, Token Refresh, and Logout flows
-- Forgot Password request handling & enumeration resistance
-- Cryptographic token generation, hash storage, and expiry checks
-- Single-use atomic consumption under concurrency
-- Session revocation on password reset
-- Built-in role and permission enforcement
+> **Important**: Never commit `.env` to version control. Use `.env.example` as a template. In production (Render, Azure, etc.), set these as environment variables in the platform dashboard.
 
 ---
 
@@ -293,3 +275,99 @@ docker run -d -p 5000:8080 \
   -e Auth__JwtKey=your-super-secret-jwt-key-at-least-32-characters-long \
   hrm-api
 ```
+
+---
+
+## ☁️ Render Deployment
+
+### 1. Prerequisites
+- MongoDB Atlas cluster (or any MongoDB instance accessible from Render)
+- Mailtrap account (for password reset emails)
+- GitHub repository connected to Render
+
+### 2. Create Web Service
+1. Go to **https://dashboard.render.com** → **New** → **Web Service**
+2. Connect your GitHub repo (`JrUchsas/hrm-api`)
+3. Settings:
+   - **Name**: `hrm-api`
+   - **Runtime**: `Docker`
+   - **Region**: Choose closest to your users
+   - **Plan**: Free (for testing) or Starter/Standard (for production)
+
+### 3. Environment Variables (Required)
+In Render Dashboard → **Environment** tab, add:
+
+| Key | Value | Notes |
+|-----|-------|-------|
+| `ConnectionStrings__MongoDB` | `mongodb+srv://user:pass@cluster.mongodb.net/hrmdb` | Your Atlas connection string |
+| `MongoDB__Database` | `hrmdb` | Database name |
+| `Auth__JwtKey` | **Generate: `openssl rand -base64 32`** | **Must be 32+ chars, unique per environment** |
+| `Auth__Issuer` | `HrmApi` | |
+| `Auth__Audience` | `HrmApi` | |
+| `Email__Provider` | `mailtrap` | |
+| `Email__FromEmail` | `noreply@yourdomain.com` | Use verified domain |
+| `Email__FromName` | `HRM API` | |
+| `Email__Mailtrap__Host` | `sandbox.smtp.mailtrap.io` | |
+| `Email__Mailtrap__Port` | `587` | |
+| `Email__Mailtrap__Username` | `your-mailtrap-username` | From Mailtrap inbox settings |
+| `Email__Mailtrap__Password` | `your-mailtrap-password` | From Mailtrap inbox settings |
+| `App__FrontendUrl` | `https://your-frontend-domain.com` | **Your actual frontend URL** (used in reset emails) |
+
+### 4. Deploy
+- Click **Create Web Service**
+- Render builds from `Dockerfile` and deploys automatically
+- Your API will be live at: `https://hrm-api.onrender.com` (or custom domain)
+
+### 5. Verify Deployment
+```bash
+# Health checks
+curl https://hrm-api.onrender.com/health
+curl https://hrm-api.onrender.com/ready
+curl https://hrm-api.onrender.com/config
+
+# Test auth
+curl -X POST https://hrm-api.onrender.com/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@company.com","password":"AdminPass123!"}'
+```
+
+---
+
+## 🔗 Frontend Integration
+
+### Base URL
+```
+https://hrm-api.onrender.com/api
+```
+
+### Example: Login Flow
+```javascript
+// Login
+const response = await fetch('https://hrm-api.onrender.com/api/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ email: 'user@company.com', password: 'UserPass123!' })
+});
+const { accessToken, refreshToken } = await response.json();
+
+// Use access token
+const profile = await fetch('https://hrm-api.onrender.com/api/auth/me', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+```
+
+### CORS Configuration
+For production, update `Program.cs` to restrict origins:
+```csharp
+// Replace AllowAnyOrigin() with:
+policy.WithOrigins("https://your-frontend-domain.com")
+      .AllowAnyHeader()
+      .AllowAnyMethod()
+      .AllowCredentials();
+```
+
+---
+
+## 📝 License
+
+MIT License - feel free to use in your projects.
