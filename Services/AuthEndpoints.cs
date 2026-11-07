@@ -6,6 +6,7 @@ using HrmApi.Models;
 using HrmApi.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using MongoDB.Driver;
 
 namespace HrmApi.Endpoints;
@@ -14,7 +15,9 @@ public static class AuthEndpoints
 {
     public static void MapAuthEndpoints(this WebApplication app)
     {
-        var authGroup = app.MapGroup("/api/auth").WithTags("Authentication");
+        var authGroup = app.MapGroup("/api/auth")
+            .WithTags("Authentication")
+            .RequireRateLimiting("auth-policy");
 
         // Register
         authGroup.MapPost("/register", async (
@@ -173,17 +176,13 @@ public static class AuthEndpoints
             CancellationToken cancellationToken) =>
         {
             var userId = GetUserId(user);
-            var tokens = await db.RefreshTokens
-                .Find(rt => rt.UserId == userId && rt.IsActive)
-                .ToListAsync(cancellationToken);
+            var update = Builders<RefreshToken>.Update.Set(rt => rt.RevokedAt, DateTimeOffset.UtcNow);
+            var result = await db.RefreshTokens.UpdateManyAsync(
+                rt => rt.UserId == userId && rt.RevokedAt == null,
+                update,
+                cancellationToken: cancellationToken);
 
-            foreach (var token in tokens)
-            {
-                token.RevokedAt = DateTimeOffset.UtcNow;
-                await db.RefreshTokens.ReplaceOneAsync(rt => rt.Id == token.Id, token, cancellationToken: cancellationToken);
-            }
-
-            return Results.Ok(new { message = "Logged out from all devices", revokedCount = tokens.Count });
+            return Results.Ok(new { message = "Logged out from all devices", revokedCount = result.ModifiedCount });
         }).RequireAuthorization().WithName("LogoutAll");
 
         // Get current user with roles and permissions
@@ -208,16 +207,38 @@ public static class AuthEndpoints
         authGroup.MapPost("/forgot-password", async (
             ForgotPasswordRequest request,
             MongoDbContext db,
+            PasswordResetTokenService tokenService,
+            IEmailService emailService,
+            IConfiguration configuration,
             CancellationToken cancellationToken) =>
         {
             var email = request.Email.Trim().ToLowerInvariant();
+
+            if (!IsValidEmail(email))
+                return Results.BadRequest("Invalid email format.");
+
             var user = await db.Users.Find(u => u.Email == email).FirstOrDefaultAsync(cancellationToken);
 
             // Always return success to prevent email enumeration
-            if (user == null) return Results.Ok(new { message = "If the email exists, a reset link has been sent" });
+            if (user == null || user.Status != UserStatus.Active)
+                return Results.Ok(new { message = "If the email exists, a reset link has been sent" });
 
-            // TODO: Generate reset token, send email
-            // For now, just return success
+            // Generate reset token
+            var plainToken = await tokenService.GenerateTokenAsync(user.Id, cancellationToken);
+
+            // Build reset link from configured frontend URL
+            var frontendUrl = configuration["App:FrontendUrl"] ?? "http://localhost:3000";
+            var resetLink = $"{frontendUrl.TrimEnd('/')}/reset-password?token={plainToken}&email={Uri.EscapeDataString(email)}";
+
+            // Send email
+            var emailResult = await emailService.SendPasswordResetEmailAsync(email, resetLink, email, cancellationToken);
+
+            if (!emailResult.Success)
+            {
+                // Log but don't expose to user
+                Console.Error.WriteLine($"[FORGOT PASSWORD] Email delivery failed for {email}: {emailResult.ErrorMessage}");
+            }
+
             return Results.Ok(new { message = "If the email exists, a reset link has been sent" });
         }).WithName("ForgotPassword");
 
@@ -225,29 +246,44 @@ public static class AuthEndpoints
         authGroup.MapPost("/reset-password", async (
             ResetPasswordRequest request,
             MongoDbContext db,
+            PasswordResetTokenService tokenService,
             IPasswordHasher<User> hasher,
             CancellationToken cancellationToken) =>
         {
-            // TODO: Validate reset token from email
-            // For now, simple implementation
             var email = request.Email.Trim().ToLowerInvariant();
-            var user = await db.Users.Find(u => u.Email == email).FirstOrDefaultAsync(cancellationToken);
+            var plainToken = request.ResetToken;
+            var newPassword = request.NewPassword;
 
-            if (user == null) return Results.BadRequest("Invalid reset token");
+            if (!IsValidEmail(email))
+                return Results.BadRequest("Invalid email format.");
 
-            user.PasswordHash = hasher.HashPassword(user, request.NewPassword);
+            if (string.IsNullOrWhiteSpace(plainToken))
+                return Results.BadRequest("Reset token is required.");
+
+            if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < 8)
+                return Results.BadRequest("New password must be at least 8 characters.");
+
+            // Validate token
+            var user = await tokenService.ValidateTokenAsync(email, plainToken, cancellationToken);
+
+            if (user == null)
+                return Results.BadRequest("Invalid or expired reset token.");
+
+            // Consume the token (single-use)
+            var consumed = await tokenService.ConsumeTokenAsync(plainToken, cancellationToken);
+            if (!consumed)
+                return Results.BadRequest("Invalid or expired reset token.");
+
+            // Update password
+            user.PasswordHash = hasher.HashPassword(user, newPassword);
             user.UpdatedAt = DateTimeOffset.UtcNow;
 
             // Revoke all refresh tokens (force re-login)
-            var tokens = await db.RefreshTokens
-                .Find(rt => rt.UserId == user.Id && rt.IsActive)
-                .ToListAsync(cancellationToken);
-
-            foreach (var token in tokens)
-            {
-                token.RevokedAt = DateTimeOffset.UtcNow;
-                await db.RefreshTokens.ReplaceOneAsync(rt => rt.Id == token.Id, token, cancellationToken: cancellationToken);
-            }
+            var update = Builders<RefreshToken>.Update.Set(rt => rt.RevokedAt, DateTimeOffset.UtcNow);
+            await db.RefreshTokens.UpdateManyAsync(
+                rt => rt.UserId == user.Id && rt.RevokedAt == null,
+                update,
+                cancellationToken: cancellationToken);
 
             await db.Users.ReplaceOneAsync(u => u.Id == user.Id, user, cancellationToken: cancellationToken);
 
@@ -276,15 +312,11 @@ public static class AuthEndpoints
             profile.UpdatedAt = DateTimeOffset.UtcNow;
 
             // Revoke all refresh tokens (force re-login on other devices)
-            var tokens = await db.RefreshTokens
-                .Find(rt => rt.UserId == userId && rt.IsActive)
-                .ToListAsync(cancellationToken);
-
-            foreach (var token in tokens)
-            {
-                token.RevokedAt = DateTimeOffset.UtcNow;
-                await db.RefreshTokens.ReplaceOneAsync(rt => rt.Id == token.Id, token, cancellationToken: cancellationToken);
-            }
+            var update = Builders<RefreshToken>.Update.Set(rt => rt.RevokedAt, DateTimeOffset.UtcNow);
+            await db.RefreshTokens.UpdateManyAsync(
+                rt => rt.UserId == userId && rt.RevokedAt == null,
+                update,
+                cancellationToken: cancellationToken);
 
             await db.Users.ReplaceOneAsync(u => u.Id == userId, profile, cancellationToken: cancellationToken);
 

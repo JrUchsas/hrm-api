@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -20,8 +21,22 @@ Env.Load(); // Load .env file
 
 var builder = WebApplication.CreateBuilder(args);
 
-var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDB")
-    ?? throw new InvalidOperationException("ConnectionStrings:MongoDB is required.");
+var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDB");
+if (string.IsNullOrWhiteSpace(mongoConnectionString))
+{
+    mongoConnectionString = builder.Configuration["MONGODB_URI"];
+}
+if (string.IsNullOrWhiteSpace(mongoConnectionString))
+{
+    if (builder.Environment.IsEnvironment("Testing"))
+    {
+        mongoConnectionString = "mongodb://localhost:27017";
+    }
+    else
+    {
+        throw new InvalidOperationException("MongoDB connection string is missing. Please set ConnectionStrings__MongoDB or MONGODB_URI in your .env file or environment variables.");
+    }
+}
 
 builder.Services.AddSingleton<IMongoClient>(_ => new MongoClient(mongoConnectionString));
 builder.Services.AddScoped<MongoDbContext>();
@@ -33,15 +48,42 @@ builder.Services.AddHealthChecks()
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<PermissionService>();
 builder.Services.AddScoped<RbacSeedService>();
+builder.Services.AddScoped<PasswordResetTokenService>();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddHttpClient();
+
+// Register email service based on configuration
+var emailProvider = builder.Configuration["Email:Provider"]?.ToLowerInvariant() ?? "mailtrap";
+if (emailProvider == "mailgun")
+{
+    builder.Services.AddScoped<IEmailService, MailgunEmailService>();
+}
+else
+{
+    builder.Services.AddScoped<IEmailService, MailtrapEmailService>();
+}
 
 // Register RBAC authorization handler and policies
 builder.Services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
 builder.Services.AddRbacAuthorization();
 
-var jwtKey = builder.Configuration["Auth:JwtKey"] ?? throw new InvalidOperationException("Auth:JwtKey is required.");
+var jwtKey = builder.Configuration["Auth:JwtKey"];
+if (string.IsNullOrWhiteSpace(jwtKey))
+{
+    jwtKey = builder.Configuration["JWT_SECRET"] ?? builder.Configuration["JWT_KEY"];
+}
+if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
+{
+    if (builder.Environment.IsEnvironment("Testing"))
+    {
+        jwtKey = "test-jwt-key-that-is-at-least-32-characters-long";
+    }
+    else
+    {
+        throw new InvalidOperationException("Auth:JwtKey (or JWT_SECRET) is required and must be at least 32 characters long. Please set it in your .env file or environment variables.");
+    }
+}
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
     options.TokenValidationParameters = new TokenValidationParameters
@@ -62,32 +104,39 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
     policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
+// Register Rate Limiting for auth protection
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddFixedWindowLimiter("auth-policy", opt =>
+    {
+        opt.PermitLimit = 100;
+        opt.Window = TimeSpan.FromMinutes(1);
+    });
+});
+
 var app = builder.Build();
 
-// Create MongoDB indexes and seed RBAC data on startup
+// Create MongoDB indexes and seed default RBAC data on startup
 using (var scope = app.Services.CreateScope())
 {
-    var client = scope.ServiceProvider.GetRequiredService<IMongoClient>();
-    var db = client.GetDatabase("hrmdb");
+    try
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<MongoDbContext>();
+        await dbContext.CreateIndexesAsync();
 
-    // Drop legacy collections (habits, checkins) that are no longer used
-    await db.DropCollectionAsync("habits");
-    await db.DropCollectionAsync("checkins");
-
-    // Drop RBAC collections to ensure clean seed on each startup
-    await db.DropCollectionAsync("users");
-    await db.DropCollectionAsync("user_roles");
-    await db.DropCollectionAsync("role_permissions");
-
-    var dbContext = scope.ServiceProvider.GetRequiredService<MongoDbContext>();
-    await dbContext.CreateIndexesAsync();
-
-    // Seed RBAC data
-    var seedService = scope.ServiceProvider.GetRequiredService<RbacSeedService>();
-    await seedService.SeedAsync();
+        // Seed default RBAC data (idempotent: checks for existing roles and permissions)
+        var seedService = scope.ServiceProvider.GetRequiredService<RbacSeedService>();
+        await seedService.SeedAsync();
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "Failed to initialize MongoDB indexes or seed RBAC data on startup.");
+    }
 }
 
 app.UseCors();
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -136,18 +185,3 @@ app.MapAuthEndpoints();
 app.MapRbacEndpoints();
 
 app.Run();
-
-static Guid UserId(ClaimsPrincipal user) => Guid.Parse(user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub") ?? throw new UnauthorizedAccessException());
-
-static bool IsValidEmail(string email)
-{
-    try
-    {
-        var addr = new System.Net.Mail.MailAddress(email);
-        return addr.Address == email;
-    }
-    catch
-    {
-        return false;
-    }
-}

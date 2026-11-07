@@ -19,6 +19,7 @@ public sealed class MongoDbContext
     public IMongoCollection<UserRole> UserRoles => _database.GetCollection<UserRole>("user_roles");
     public IMongoCollection<RolePermission> RolePermissions => _database.GetCollection<RolePermission>("role_permissions");
     public IMongoCollection<RefreshToken> RefreshTokens => _database.GetCollection<RefreshToken>("refresh_tokens");
+    public IMongoCollection<PasswordResetToken> PasswordResetTokens => _database.GetCollection<PasswordResetToken>("password_reset_tokens");
 
     public async Task CreateIndexesAsync()
     {
@@ -58,5 +59,13 @@ public sealed class MongoDbContext
         await RefreshTokens.Indexes.CreateOneAsync(new CreateIndexModel<RefreshToken>(refreshTokenUserIndex));
         var refreshTokenExpiryIndex = Builders<RefreshToken>.IndexKeys.Ascending(rt => rt.ExpiresAt);
         await RefreshTokens.Indexes.CreateOneAsync(new CreateIndexModel<RefreshToken>(refreshTokenExpiryIndex));
+
+        // PasswordResetTokens indexes
+        var resetTokenHashIndex = Builders<PasswordResetToken>.IndexKeys.Ascending(prt => prt.TokenHash);
+        await PasswordResetTokens.Indexes.CreateOneAsync(new CreateIndexModel<PasswordResetToken>(resetTokenHashIndex, new CreateIndexOptions { Unique = true }));
+        var resetTokenUserIndex = Builders<PasswordResetToken>.IndexKeys.Ascending(prt => prt.UserId);
+        await PasswordResetTokens.Indexes.CreateOneAsync(new CreateIndexModel<PasswordResetToken>(resetTokenUserIndex));
+        var resetTokenExpiryIndex = Builders<PasswordResetToken>.IndexKeys.Ascending(prt => prt.ExpiresAt);
+        await PasswordResetTokens.Indexes.CreateOneAsync(new CreateIndexModel<PasswordResetToken>(resetTokenExpiryIndex));
     }
 }

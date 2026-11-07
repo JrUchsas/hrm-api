@@ -507,12 +507,11 @@ public static class RbacEndpoints
             // If suspending, revoke all refresh tokens
             if (request.Status == UserStatus.Suspended)
             {
-                var tokens = await db.RefreshTokens.Find(rt => rt.UserId == userId && rt.IsActive).ToListAsync(cancellationToken);
-                foreach (var token in tokens)
-                {
-                    token.RevokedAt = DateTimeOffset.UtcNow;
-                    await db.RefreshTokens.ReplaceOneAsync(rt => rt.Id == token.Id, token, cancellationToken: cancellationToken);
-                }
+                var update = Builders<RefreshToken>.Update.Set(rt => rt.RevokedAt, DateTimeOffset.UtcNow);
+                await db.RefreshTokens.UpdateManyAsync(
+                    rt => rt.UserId == userId && rt.RevokedAt == null,
+                    update,
+                    cancellationToken: cancellationToken);
             }
 
             await db.Users.ReplaceOneAsync(u => u.Id == userId, user, cancellationToken: cancellationToken);

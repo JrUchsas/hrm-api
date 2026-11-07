@@ -49,7 +49,7 @@ public sealed class PermissionPolicyProvider : IAuthorizationPolicyProvider
         return Task.FromResult<AuthorizationPolicy?>(_options.GetPolicy(policyName));
     }
 
-    public Task<AuthorizationPolicy?> GetDefaultPolicyAsync() => Task.FromResult<AuthorizationPolicy?>(_options.DefaultPolicy);
+    public Task<AuthorizationPolicy> GetDefaultPolicyAsync() => Task.FromResult(_options.DefaultPolicy);
 
     public Task<AuthorizationPolicy?> GetFallbackPolicyAsync() => Task.FromResult<AuthorizationPolicy?>(_options.FallbackPolicy);
 }

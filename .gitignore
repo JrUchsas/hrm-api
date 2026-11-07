@@ -1,13 +1,33 @@
+# Build and binary folders
 bin/
 obj/
+publish/
+
+# User-specific files
 *.user
 *.userosscache
+*.suo
+*.userprefs
+
+# IDE & Editor files
 .vs/
 .idea/
+.vscode/
+
+# Local databases & logs
 *.db
 *.sqlite
 *.sqlite3
-.DS_Store
 *.log
-.env
-.env.local
+
+# Sensitive environment files (keep .env.example tracked)
+.env*
+!.env.example
+
+# Test and coverage artifacts
+TestResults/
+coverage/
+
+# OS generated files
+.DS_Store
+Thumbs.db
