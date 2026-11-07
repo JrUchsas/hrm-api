@@ -20,6 +20,8 @@ public sealed class MongoDbContext
     public IMongoCollection<RolePermission> RolePermissions => _database.GetCollection<RolePermission>("role_permissions");
     public IMongoCollection<RefreshToken> RefreshTokens => _database.GetCollection<RefreshToken>("refresh_tokens");
     public IMongoCollection<PasswordResetToken> PasswordResetTokens => _database.GetCollection<PasswordResetToken>("password_reset_tokens");
+    public IMongoCollection<Attendance> Attendance => _database.GetCollection<Attendance>("attendance");
+    public IMongoCollection<AttendanceSettings> AttendanceSettings => _database.GetCollection<AttendanceSettings>("attendance_settings");
 
     public async Task CreateIndexesAsync()
     {
@@ -67,5 +69,15 @@ public sealed class MongoDbContext
         await PasswordResetTokens.Indexes.CreateOneAsync(new CreateIndexModel<PasswordResetToken>(resetTokenUserIndex));
         var resetTokenExpiryIndex = Builders<PasswordResetToken>.IndexKeys.Ascending(prt => prt.ExpiresAt);
         await PasswordResetTokens.Indexes.CreateOneAsync(new CreateIndexModel<PasswordResetToken>(resetTokenExpiryIndex));
+
+        // Attendance indexes
+        var attendanceUserDateIndex = Builders<Attendance>.IndexKeys.Ascending(a => a.UserId).Ascending(a => a.AttendanceDate);
+        await Attendance.Indexes.CreateOneAsync(new CreateIndexModel<Attendance>(attendanceUserDateIndex, new CreateIndexOptions { Unique = true }));
+        var attendanceDateIndex = Builders<Attendance>.IndexKeys.Ascending(a => a.AttendanceDate);
+        await Attendance.Indexes.CreateOneAsync(new CreateIndexModel<Attendance>(attendanceDateIndex));
+        var attendanceUserIndex = Builders<Attendance>.IndexKeys.Ascending(a => a.UserId);
+        await Attendance.Indexes.CreateOneAsync(new CreateIndexModel<Attendance>(attendanceUserIndex));
+        var attendanceStatusIndex = Builders<Attendance>.IndexKeys.Ascending(a => a.Status);
+        await Attendance.Indexes.CreateOneAsync(new CreateIndexModel<Attendance>(attendanceStatusIndex));
     }
 }
