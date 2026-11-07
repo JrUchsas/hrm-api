@@ -19,7 +19,7 @@ public sealed class MailtrapEmailService : IEmailService
         _fromName = configuration["Email:FromName"] ?? "HRM API";
         _logger = logger;
         _httpClient = httpClient ?? new HttpClient();
-        _httpClient.BaseAddress = new Uri("https://send.mailtrap.io/");
+        _httpClient.BaseAddress = new Uri("https://sandbox.api.mailtrap.io/");
         _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiToken);
     }
 
