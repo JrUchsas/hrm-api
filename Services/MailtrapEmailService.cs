@@ -1,5 +1,4 @@
-using System.Net;
-using System.Net.Mail;
+using System.Net.Http.Json;
 using System.Text;
 using Microsoft.Extensions.Logging;
 
@@ -7,32 +6,30 @@ namespace HrmApi.Services;
 
 public sealed class MailtrapEmailService : IEmailService
 {
-    private readonly string _host;
-    private readonly int _port;
-    private readonly string _username;
-    private readonly string _password;
+    private readonly string _apiToken;
     private readonly string _fromEmail;
     private readonly string _fromName;
     private readonly ILogger<MailtrapEmailService>? _logger;
+    private readonly HttpClient _httpClient;
 
-    public MailtrapEmailService(IConfiguration configuration, ILogger<MailtrapEmailService>? logger = null)
+    public MailtrapEmailService(IConfiguration configuration, ILogger<MailtrapEmailService>? logger = null, HttpClient? httpClient = null)
     {
-        _host = configuration["Email:Mailtrap:Host"] ?? "sandbox.smtp.mailtrap.io";
-        _port = int.TryParse(configuration["Email:Mailtrap:Port"], out var p) ? p : 587;
-        _username = configuration["Email:Mailtrap:Username"] ?? "";
-        _password = configuration["Email:Mailtrap:Password"] ?? "";
+        _apiToken = configuration["Email:Mailtrap:ApiToken"] ?? "";
         _fromEmail = configuration["Email:FromEmail"] ?? "noreply@hrmapi.local";
         _fromName = configuration["Email:FromName"] ?? "HRM API";
         _logger = logger;
+        _httpClient = httpClient ?? new HttpClient();
+        _httpClient.BaseAddress = new Uri("https://send.mailtrap.io/");
+        _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiToken);
     }
 
     public async Task<EmailResult> SendPasswordResetEmailAsync(string toEmail, string resetLink, string userName, CancellationToken cancellationToken = default)
     {
         _logger?.LogInformation("SendPasswordResetEmailAsync called for {Email}", toEmail);
 
-        if (string.IsNullOrWhiteSpace(_username) || string.IsNullOrWhiteSpace(_password))
+        if (string.IsNullOrWhiteSpace(_apiToken))
         {
-            _logger?.LogInformation("Development mode: credentials empty. Password reset email logged for {Email}", toEmail);
+            _logger?.LogInformation("Development mode: API token empty. Password reset email logged for {Email}", toEmail);
             Console.WriteLine($"[DEV MODE] Password reset email would be sent to: {toEmail}");
             Console.WriteLine($"[DEV MODE] Reset link: {resetLink}");
             return new EmailResult(true, "Development mode: email logged to console");
@@ -40,33 +37,31 @@ public sealed class MailtrapEmailService : IEmailService
 
         try
         {
-            using var client = new SmtpClient(_host, _port)
-            {
-                Credentials = new NetworkCredential(_username, _password),
-                EnableSsl = true,
-                DeliveryMethod = SmtpDeliveryMethod.Network,
-                UseDefaultCredentials = false,
-                Timeout = 30000
-            };
-
             var subject = "Reset Your Password - HRM API";
             var body = BuildResetEmailBody(userName, resetLink);
 
-            using var message = new MailMessage
+            var request = new
             {
-                From = new MailAddress(_fromEmail, _fromName),
-                Subject = subject,
-                Body = body,
-                IsBodyHtml = true,
-                BodyEncoding = Encoding.UTF8,
-                SubjectEncoding = Encoding.UTF8
+                from = new { email = _fromEmail, name = _fromName },
+                to = new[] { new { email = toEmail } },
+                subject = subject,
+                html = body,
+                category = "Password Reset"
             };
 
-            message.To.Add(new MailAddress(toEmail));
+            var response = await _httpClient.PostAsJsonAsync("api/send", request, cancellationToken);
 
-            await client.SendMailAsync(message, cancellationToken);
-            _logger?.LogInformation("Password reset email sent successfully to {Email}", toEmail);
-            return new EmailResult(true);
+            if (response.IsSuccessStatusCode)
+            {
+                _logger?.LogInformation("Password reset email sent successfully to {Email} via Mailtrap API", toEmail);
+                return new EmailResult(true);
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger?.LogError("Mailtrap API error: {StatusCode} - {Error}", response.StatusCode, errorContent);
+                return new EmailResult(false, $"Mailtrap API error: {response.StatusCode}");
+            }
         }
         catch (Exception ex)
         {
