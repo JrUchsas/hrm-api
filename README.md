@@ -385,9 +385,9 @@ In Render Dashboard → **Environment** tab, add:
 | `Email__FromEmail` | `noreply@yourdomain.com` | Use verified domain |
 | `Email__FromName` | `HRM API` | |
 | `Email__Mailtrap__Host` | `sandbox.smtp.mailtrap.io` | |
-| `Email__Mailtrap__Port` | `587` | |
-| `Email__Mailtrap__Username` | *(leave empty for dev mode)* | **Empty = dev mode (logs link to console). Placeholders like `your-mailtrap-username` cause silent SMTP failure.** |
-| `Email__Mailtrap__Password` | *(leave empty for dev mode)* | **Empty = dev mode. Placeholders cause silent SMTP failure.** |
+| `Email__Mailtrap__Port` | `2525` | **Use 2525 on Render (port 587 often blocked). Works with Mailtrap sandbox.** |
+| `Email__Mailtrap__Username` | `your-mailtrap-username` | From Mailtrap Inbox → SMTP Settings |
+| `Email__Mailtrap__Password` | `your-mailtrap-password` | From Mailtrap Inbox → SMTP Settings |
 | `App__FrontendUrl` | `https://your-frontend-domain.com` | **Your actual Vercel/frontend URL** (used in reset emails) |
 | `Attendance__BusinessTimezone` | `Asia/Dhaka` | Business timezone for date calculations |
 | `Attendance__WorkStartTime` | `09:00` | Work day start time (24h format) |
@@ -395,7 +395,7 @@ In Render Dashboard → **Environment** tab, add:
 | `Attendance__LateCutoffMinutes` | `15` | Minutes after work start considered late |
 | `Attendance__MinimumWorkingMinutes` | `480` | Minimum working minutes for full day (8h = 480) |
 
-> ⚠️ **Critical**: Do **not** use placeholder values like `your-mailtrap-username`/`your-mailtrap-password`. They cause the SMTP client to attempt real delivery and fail silently — no email sent, no link logged. For development mode (link logged to console), **leave both completely empty**.
+> ⚠️ **Important**: Use **port 2525** on Render (port 587 is often blocked by cloud providers). Mailtrap sandbox supports both ports. Get credentials from Mailtrap Inbox → **SMTP Settings** tab.
 
 ### 4. Deploy
 - Click **Create Web Service**
