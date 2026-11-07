@@ -228,7 +228,7 @@ d:\All Codes\Projects\
 
 The database automatically seeds the following users and role assignments on application startup (idempotent — safe to run multiple times):
 
-| Role | Email | Password | User ID | Goal / Title |
+| Role | Email | Default Password | User ID | Goal / Title |
 | :--- | :--- | :--- | :--- | :--- |
 | **Super Admin** | `admin@company.com` | `AdminPass123!` | `a34f2cde-fda4-4451-a66d-b6e281d630fa` | System Administrator |
 | **HR Manager** | `hrmanager@company.com` | `HrPass123!` | `2237bc48-8948-4d7d-b22d-48e3635707ec` | Human Resources Manager |
@@ -236,7 +236,7 @@ The database automatically seeds the following users and role assignments on app
 | **User 2** | `user2@company.com` | `UserPass123!` | `37a4d393-814d-495e-9930-772d704660af` | Employee User 2 |
 | **User 3** | `user3@company.com` | `UserPass123!` | `813407fd-da7a-4fdb-8aeb-097744f994ad` | Employee User 3 |
 
-> **Note**: These are seeded automatically when the app starts against an empty database. In production, use the `/api/rbac/bootstrap/superadmin` endpoint to create your first admin, then manage users via the RBAC endpoints.
+> **Note**: These demo users are created on first startup if they don't exist. **Password resets persist across restarts** — the seeder repairs `Status`/`EmailVerified` if they drift, but **never overwrites a changed password**. In production, use the `/api/rbac/bootstrap/superadmin` endpoint to create your first admin, then manage users via the RBAC endpoints.
 
 ---
 
@@ -248,6 +248,20 @@ The database automatically seeds the following users and role assignments on app
 4. **Session Invalidation**: Password changes and resets automatically revoke all active refresh tokens, forcing re-authentication across all devices.
 5. **Dynamic Policy Authorization**: Handlers dynamically check permissions in the database using the format `Permission:<Resource>.<Action>` (e.g. `users.read`, `roles.create`).
 6. **Rate Limiting**: Fixed-window rate limiting is enforced on sensitive authentication endpoints to mitigate brute force and credential stuffing attacks.
+
+### Password Reset Without an Email Provider (Development)
+
+When `Email__Mailtrap__Username` and `Email__Mailtrap__Password` are **empty or not set**, the API runs in **development mode**: instead of sending an SMTP email, it logs the reset link to the console/stdout.
+
+**To retrieve the reset link in Render:**
+1. In Render Dashboard → **Environment**, delete `Email__Mailtrap__Username` and `Email__Mailtrap__Password` (or leave them empty)
+2. Ensure `App__FrontendUrl` is set to your Vercel frontend URL (e.g., `https://worknest-alpha-ebon.vercel.app`)
+3. Save — Render restarts the service
+4. Trigger `POST /api/auth/forgot-password` from your frontend
+5. Open Render **Logs** → find the line starting with `[DEV MODE] Reset link:`
+6. Copy that full URL — it opens the live "Set a new password" dialog on your Vercel frontend
+
+> **Important**: Placeholder values like `your-mailtrap-username` are **not** development mode — the service attempts real SMTP and silently fails. The credentials must be completely empty for dev mode.
 
 ---
 
@@ -345,14 +359,14 @@ docker run -d -p 5000:8080 \
 
 ### 1. Prerequisites
 - MongoDB Atlas cluster (or any MongoDB instance accessible from Render)
-- Mailtrap account (for password reset emails)
+- **Optional**: Mailtrap account (for password reset emails) — see "Development Mode" below if you don't have one
 - GitHub repository connected to Render
 
 ### 2. Create Web Service
 1. Go to **https://dashboard.render.com** → **New** → **Web Service**
 2. Connect your GitHub repo (`JrUchsas/hrm-api`)
 3. Settings:
-   - **Name**: `hrm-api`
+   - **Name**: `hrm-api` (or your chosen name, e.g., `hrm-api-tjfa`)
    - **Runtime**: `Docker`
    - **Region**: Choose closest to your users
    - **Plan**: Free (for testing) or Starter/Standard (for production)
@@ -372,32 +386,41 @@ In Render Dashboard → **Environment** tab, add:
 | `Email__FromName` | `HRM API` | |
 | `Email__Mailtrap__Host` | `sandbox.smtp.mailtrap.io` | |
 | `Email__Mailtrap__Port` | `587` | |
-| `Email__Mailtrap__Username` | `your-mailtrap-username` | From Mailtrap inbox settings |
-| `Email__Mailtrap__Password` | `your-mailtrap-password` | From Mailtrap inbox settings |
-| `App__FrontendUrl` | `https://your-frontend-domain.com` | **Your actual frontend URL** (used in reset emails) |
+| `Email__Mailtrap__Username` | *(leave empty for dev mode)* | **Empty = dev mode (logs link to console). Placeholders like `your-mailtrap-username` cause silent SMTP failure.** |
+| `Email__Mailtrap__Password` | *(leave empty for dev mode)* | **Empty = dev mode. Placeholders cause silent SMTP failure.** |
+| `App__FrontendUrl` | `https://your-frontend-domain.com` | **Your actual Vercel/frontend URL** (used in reset emails) |
 | `Attendance__BusinessTimezone` | `Asia/Dhaka` | Business timezone for date calculations |
 | `Attendance__WorkStartTime` | `09:00` | Work day start time (24h format) |
 | `Attendance__WorkEndTime` | `18:00` | Work day end time (24h format) |
 | `Attendance__LateCutoffMinutes` | `15` | Minutes after work start considered late |
 | `Attendance__MinimumWorkingMinutes` | `480` | Minimum working minutes for full day (8h = 480) |
 
+> ⚠️ **Critical**: Do **not** use placeholder values like `your-mailtrap-username`/`your-mailtrap-password`. They cause the SMTP client to attempt real delivery and fail silently — no email sent, no link logged. For development mode (link logged to console), **leave both completely empty**.
+
 ### 4. Deploy
 - Click **Create Web Service**
 - Render builds from `Dockerfile` and deploys automatically
-- Your API will be live at: `https://hrm-api.onrender.com` (or custom domain)
+- Your API will be live at: `https://<your-service-name>.onrender.com` (e.g., `https://hrm-api-tjfa.onrender.com`)
 
 ### 5. Verify Deployment
 ```bash
-# Health checks
-curl https://hrm-api.onrender.com/health
-curl https://hrm-api.onrender.com/ready
-curl https://hrm-api.onrender.com/config
+# Health checks (replace with your actual service URL)
+curl https://hrm-api-tjfa.onrender.com/health
+curl https://hrm-api-tjfa.onrender.com/ready
+curl https://hrm-api-tjfa.onrender.com/config
 
 # Test auth
-curl -X POST https://hrm-api.onrender.com/api/auth/login \
+curl -X POST https://hrm-api-tjfa.onrender.com/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@company.com","password":"AdminPass123!"}'
 ```
+
+### 6. Password Reset in Development Mode (No Mailtrap)
+If you left Mailtrap credentials empty:
+1. Trigger `POST /api/auth/forgot-password` from your frontend
+2. Open Render **Logs** for the service
+3. Find `[DEV MODE] Reset link: https://your-frontend.com/reset-password?token=...`
+4. Copy that URL — it opens the password reset page on your Vercel frontend directly
 
 ---
 
@@ -405,13 +428,14 @@ curl -X POST https://hrm-api.onrender.com/api/auth/login \
 
 ### Base URL
 ```
-https://hrm-api.onrender.com/api
+https://<your-service-name>.onrender.com/api
 ```
+Example: `https://hrm-api-tjfa.onrender.com/api`
 
 ### Example: Login Flow
 ```javascript
 // Login
-const response = await fetch('https://hrm-api.onrender.com/api/auth/login', {
+const response = await fetch('https://hrm-api-tjfa.onrender.com/api/auth/login', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ email: 'user@company.com', password: 'UserPass123!' })
@@ -419,7 +443,7 @@ const response = await fetch('https://hrm-api.onrender.com/api/auth/login', {
 const { accessToken, refreshToken } = await response.json();
 
 // Use access token
-const profile = await fetch('https://hrm-api.onrender.com/api/auth/me', {
+const profile = await fetch('https://hrm-api-tjfa.onrender.com/api/auth/me', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
 });
 ```
@@ -427,7 +451,7 @@ const profile = await fetch('https://hrm-api.onrender.com/api/auth/me', {
 ### Example: Attendance Check-In/Out Flow
 ```javascript
 // Check in (call at start of work day)
-const checkIn = await fetch('https://hrm-api.onrender.com/api/attendance/check-in', {
+const checkIn = await fetch('https://hrm-api-tjfa.onrender.com/api/attendance/check-in', {
   method: 'POST',
   headers: { 
     'Content-Type': 'application/json',
@@ -438,13 +462,13 @@ const checkIn = await fetch('https://hrm-api.onrender.com/api/attendance/check-i
 const { attendanceId, status, message } = await checkIn.json();
 
 // Get today's status
-const today = await fetch('https://hrm-api.onrender.com/api/attendance/my/today', {
+const today = await fetch('https://hrm-api-tjfa.onrender.com/api/attendance/my/today', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
 });
 const { hasRecord, record } = await today.json();
 
 // Check out (call at end of work day)
-const checkOut = await fetch('https://hrm-api.onrender.com/api/attendance/check-out', {
+const checkOut = await fetch('https://hrm-api-tjfa.onrender.com/api/attendance/check-out', {
   method: 'POST',
   headers: { 
     'Content-Type': 'application/json',
@@ -455,7 +479,7 @@ const checkOut = await fetch('https://hrm-api.onrender.com/api/attendance/check-
 const { workingDurationMinutes, status: finalStatus } = await checkOut.json();
 
 // Get personal history (last 30 days)
-const history = await fetch('https://hrm-api.onrender.com/api/attendance/my?page=1&pageSize=30', {
+const history = await fetch('https://hrm-api-tjfa.onrender.com/api/attendance/my?page=1&pageSize=30', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
 });
 const { records, totalCount } = await history.json();
@@ -464,19 +488,19 @@ const { records, totalCount } = await history.json();
 ### Example: Admin Daily Report
 ```javascript
 // Admin: Get daily report for today
-const dailyReport = await fetch('https://hrm-api.onrender.com/api/attendance/admin/daily', {
+const dailyReport = await fetch('https://hrm-api-tjfa.onrender.com/api/attendance/admin/daily', {
   headers: { 'Authorization': `Bearer ${adminAccessToken}` }
 });
 const { date, records, presentCount, lateCount, absentCount, onLeaveCount } = await dailyReport.json();
 
 // Admin: Get monthly summary for November 2026
-const monthlySummary = await fetch('https://hrm-api.onrender.com/api/attendance/admin/summary?year=2026&month=11', {
+const monthlySummary = await fetch('https://hrm-api-tjfa.onrender.com/api/attendance/admin/summary?year=2026&month=11', {
   headers: { 'Authorization': `Bearer ${adminAccessToken}` }
 });
 const { year, month, summaries } = await monthlySummary.json();
 
 // Admin: Update attendance settings
-const updateSettings = await fetch('https://hrm-api.onrender.com/api/attendance/admin/settings', {
+const updateSettings = await fetch('https://hrm-api-tjfa.onrender.com/api/attendance/admin/settings', {
   method: 'PUT',
   headers: { 
     'Content-Type': 'application/json',

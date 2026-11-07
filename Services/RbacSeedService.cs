@@ -205,12 +205,24 @@ public sealed class RbacSeedService(MongoDbContext db, IPasswordHasher<User> pas
             }
             else
             {
-                // Ensure default testing users have active status and valid password hash
-                existingUser.PasswordHash = passwordHasher.HashPassword(existingUser, password);
-                existingUser.Status = UserStatus.Active;
-                existingUser.EmailVerified = true;
-                existingUser.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.Users.ReplaceOneAsync(u => u.Id == existingUser.Id, existingUser, cancellationToken: cancellationToken);
+                // Repair status/email-verified if they drifted, but DO NOT re-hash password
+                // (password resets must persist across restarts)
+                bool needsUpdate = false;
+                if (existingUser.Status != UserStatus.Active)
+                {
+                    existingUser.Status = UserStatus.Active;
+                    needsUpdate = true;
+                }
+                if (!existingUser.EmailVerified)
+                {
+                    existingUser.EmailVerified = true;
+                    needsUpdate = true;
+                }
+                if (needsUpdate)
+                {
+                    existingUser.UpdatedAt = DateTimeOffset.UtcNow;
+                    await db.Users.ReplaceOneAsync(u => u.Id == existingUser.Id, existingUser, cancellationToken: cancellationToken);
+                }
             }
 
             if (roleDict.TryGetValue(roleName, out var roleId))
