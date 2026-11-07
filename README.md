@@ -1,6 +1,6 @@
-# HRM-Api - Authentication & Role-Based Access Control (RBAC) API
+# HRM-Api - Authentication, RBAC & Attendance Management API
 
-A high-performance, secure .NET 10 Minimal API microservice providing enterprise **Authentication, Role-Based Access Control (RBAC), and Password Reset** capabilities backed by **MongoDB**.
+A high-performance, secure .NET 10 Minimal API microservice providing enterprise **Authentication, Role-Based Access Control (RBAC), Password Reset, and Daily Attendance Management** capabilities backed by **MongoDB**.
 
 ---
 
@@ -40,7 +40,8 @@ d:\All Codes\Projects\
 │   │   ├── UserRole.cs                   # User-to-Role junction model
 │   │   ├── RolePermission.cs             # Role-to-Permission junction model
 │   │   ├── RefreshToken.cs               # Refresh token tracking & rotation state
-│   │   └── PasswordResetToken.cs         # SHA-256 hashed password reset token model
+│   │   ├── PasswordResetToken.cs         # SHA-256 hashed password reset token model
+│   │   └── Attendance.cs                 # Attendance, AttendanceSettings, Holiday, AttendanceStatus enum & all DTOs
 │   ├── Services\
 │   │   ├── AuthService.cs                # Access/refresh token creation & validation
 │   │   ├── AuthEndpoints.cs              # Authentication endpoint route definitions
@@ -51,7 +52,9 @@ d:\All Codes\Projects\
 │   │   ├── PasswordResetTokenService.cs  # Cryptographic token generation & validation
 │   │   ├── IEmailService.cs              # Email provider interface & EmailResult record
 │   │   ├── MailtrapEmailService.cs       # SMTP email service implementation
-│   │   └── MailgunEmailService.cs        # Mailgun HTTP API service implementation
+│   │   ├── MailgunEmailService.cs        # Mailgun HTTP API service implementation
+│   │   ├── AttendanceService.cs          # Core attendance business logic (check-in/out, reports, settings)
+│   │   └── AttendanceEndpoints.cs        # Attendance API endpoint route definitions
 │   └── Health\
 │       └── HealthCheck.cs                # Diagnostics for MongoDB, collections, and JWT
 ```
@@ -118,6 +121,37 @@ d:\All Codes\Projects\
 - `ConsumedAt` (`DateTimeOffset?`, single-use protection)
 - `CreatedAt` (`DateTimeOffset`)
 
+### 8. `Attendance` (`attendance` collection)
+- `Id` (`Guid`)
+- `UserId` (`Guid`, indexed)
+- `AttendanceDate` (`DateOnly`, stored as string in `yyyy-MM-dd` format)
+- `CheckInAtUtc` (`DateTimeOffset?`, check-in timestamp in UTC)
+- `CheckOutAtUtc` (`DateTimeOffset?`, check-out timestamp in UTC)
+- `Status` (`AttendanceStatus` enum: `Present=1`, `Late=2`, `Absent=3`, `OnLeave=4`, `Incomplete=5`, `Holiday=6`)
+- `WorkingDurationMinutes` (`int`, calculated at check-out)
+- `LateMinutes` (`int`, minutes late at check-in)
+- `Notes` (`string?`, optional notes)
+- `CreatedAtUtc` & `UpdatedAtUtc` (`DateTimeOffset`)
+- **Compound Unique Index** on `(UserId, AttendanceDate)` - prevents duplicate check-ins per day
+
+### 9. `AttendanceSettings` (`attendance_settings` collection)
+- `Id` (`Guid`)
+- `BusinessTimezone` (`string`, IANA timezone ID, default `Asia/Dhaka`)
+- `WorkStartTime` (`TimeOnly`, default `09:00`)
+- `WorkEndTime` (`TimeOnly`, default `18:00`)
+- `LateCutoffMinutes` (`int`, default `15` minutes after work start)
+- `MinimumWorkingMinutes` (`int`, default `480` = 8 hours)
+- `WorkingDays` (`List<DayOfWeek>`, default Mon-Fri)
+- `Holidays` (`List<Holiday>`, static and recurring holidays)
+- `CreatedAtUtc` & `UpdatedAtUtc` (`DateTimeOffset`)
+
+### 10. `Holiday` (embedded in AttendanceSettings)
+- `Id` (`Guid`)
+- `Name` (`string`, holiday name)
+- `Date` (`DateOnly`, specific date)
+- `IsRecurring` (`bool`, if true, repeats annually on same month/day)
+- `CreatedAtUtc` (`DateTimeOffset`)
+
 ---
 
 ## 🔌 API Endpoints Reference
@@ -156,7 +190,31 @@ d:\All Codes\Projects\
 | `GET` | `/api/rbac/users` | `super admin` | Paginated search of all users with roles, status, and verification flags. |
 | `PATCH` | `/api/rbac/users/{userId}/status` | `super admin` | Updates user status (`Active`, `Suspended`). Suspending immediately revokes all refresh tokens. |
 
-### 3. Health & Diagnostics (`/health`, `/ready`, `/config`)
+### 3. Attendance Management Endpoints (`/api/attendance`)
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/attendance/check-in` | `[Auth]` | Check in for today (business timezone-aware). Prevents duplicate check-ins. Returns late status if past cutoff. |
+| `POST` | `/api/attendance/check-out` | `[Auth]` | Check out for today. Calculates working duration. Marks `Incomplete` if below minimum minutes. |
+| `GET` | `/api/attendance/my/today` | `[Auth]` | Get current user's attendance record for today (business date). |
+| `GET` | `/api/attendance/my` | `[Auth]` | Get current user's attendance history with pagination and date filters. |
+| `GET` | `/api/attendance/admin/daily` | `super admin` or `hr manager` | Admin daily report for a specific date (defaults to today). Shows all users with status: Present, Late, Absent, OnLeave, Holiday, NoRecord. |
+| `GET` | `/api/attendance/admin/summary` | `super admin` or `hr manager` | Admin monthly summary per user: present/late/absent/on-leave/incomplete days, total working minutes, attendance %, avg hours/day. |
+| `GET` | `/api/attendance/admin/settings` | `super admin` or `hr manager` | Get current attendance settings (work hours, late cutoff, working days, holidays). |
+| `PUT` | `/api/attendance/admin/settings` | `super admin` | Update attendance settings (late cutoff, minimum working minutes, working days, holidays). |
+| `POST` | `/api/attendance/admin/leave` | `super admin` or `hr manager` | Mark a user as on leave for a specific date (creates/updates attendance record with `OnLeave` status). |
+| `DELETE` | `/api/attendance/admin/{attendanceId}` | `super admin` | Delete an attendance record (admin override). |
+
+**Attendance Features:**
+- **Business Timezone**: All dates calculated in configured timezone (default `Asia/Dhaka`), not server UTC
+- **Unique Constraint**: MongoDB compound unique index on `(UserId, AttendanceDate)` prevents race conditions
+- **Late Detection**: Configurable `LateCutoffMinutes` (default 15) after `WorkStartTime` (default 09:00)
+- **Working Hours**: `WorkStartTime`/`WorkEndTime` (default 09:00-18:00), `MinimumWorkingMinutes` (default 480 = 8h)
+- **Working Days**: Configurable weekdays (default Mon-Fri), excludes weekends and holidays
+- **Holidays**: Static + recurring (monthly) holidays supported in settings
+- **Statuses**: `Present`, `Late`, `Absent`, `OnLeave`, `Incomplete`, `Holiday`
+
+### 4. Health & Diagnostics (`/health`, `/ready`, `/config`)
 
 | Endpoint | Tag | Description |
 | :--- | :--- | :--- |
@@ -254,6 +312,11 @@ Email__Mailtrap__Password=your-mailtrap-password
 Email__Mailgun__Domain=your-mailgun-domain
 Email__Mailgun__ApiKey=your-mailgun-api-key
 App__FrontendUrl=http://localhost:3000
+Attendance__BusinessTimezone=Asia/Dhaka
+Attendance__WorkStartTime=09:00
+Attendance__WorkEndTime=18:00
+Attendance__LateCutoffMinutes=15
+Attendance__MinimumWorkingMinutes=480
 ```
 
 > **Important**: Never commit `.env` to version control. Use `.env.example` as a template. In production (Render, Azure, etc.), set these as environment variables in the platform dashboard.
@@ -312,6 +375,11 @@ In Render Dashboard → **Environment** tab, add:
 | `Email__Mailtrap__Username` | `your-mailtrap-username` | From Mailtrap inbox settings |
 | `Email__Mailtrap__Password` | `your-mailtrap-password` | From Mailtrap inbox settings |
 | `App__FrontendUrl` | `https://your-frontend-domain.com` | **Your actual frontend URL** (used in reset emails) |
+| `Attendance__BusinessTimezone` | `Asia/Dhaka` | Business timezone for date calculations |
+| `Attendance__WorkStartTime` | `09:00` | Work day start time (24h format) |
+| `Attendance__WorkEndTime` | `18:00` | Work day end time (24h format) |
+| `Attendance__LateCutoffMinutes` | `15` | Minutes after work start considered late |
+| `Attendance__MinimumWorkingMinutes` | `480` | Minimum working minutes for full day (8h = 480) |
 
 ### 4. Deploy
 - Click **Create Web Service**
@@ -353,6 +421,76 @@ const { accessToken, refreshToken } = await response.json();
 // Use access token
 const profile = await fetch('https://hrm-api.onrender.com/api/auth/me', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+```
+
+### Example: Attendance Check-In/Out Flow
+```javascript
+// Check in (call at start of work day)
+const checkIn = await fetch('https://hrm-api.onrender.com/api/attendance/check-in', {
+  method: 'POST',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`
+  },
+  body: JSON.stringify({ notes: 'Arrived at office' })
+});
+const { attendanceId, status, message } = await checkIn.json();
+
+// Get today's status
+const today = await fetch('https://hrm-api.onrender.com/api/attendance/my/today', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { hasRecord, record } = await today.json();
+
+// Check out (call at end of work day)
+const checkOut = await fetch('https://hrm-api.onrender.com/api/attendance/check-out', {
+  method: 'POST',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`
+  },
+  body: JSON.stringify({ notes: 'Leaving for the day' })
+});
+const { workingDurationMinutes, status: finalStatus } = await checkOut.json();
+
+// Get personal history (last 30 days)
+const history = await fetch('https://hrm-api.onrender.com/api/attendance/my?page=1&pageSize=30', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { records, totalCount } = await history.json();
+```
+
+### Example: Admin Daily Report
+```javascript
+// Admin: Get daily report for today
+const dailyReport = await fetch('https://hrm-api.onrender.com/api/attendance/admin/daily', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { date, records, presentCount, lateCount, absentCount, onLeaveCount } = await dailyReport.json();
+
+// Admin: Get monthly summary for November 2026
+const monthlySummary = await fetch('https://hrm-api.onrender.com/api/attendance/admin/summary?year=2026&month=11', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { year, month, summaries } = await monthlySummary.json();
+
+// Admin: Update attendance settings
+const updateSettings = await fetch('https://hrm-api.onrender.com/api/attendance/admin/settings', {
+  method: 'PUT',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${adminAccessToken}`
+  },
+  body: JSON.stringify({ 
+    lateCutoffMinutes: 10,
+    minimumWorkingMinutes: 420,
+    workingDays: ["Monday","Tuesday","Wednesday","Thursday","Friday"],
+    holidays: [
+      { date: "2026-12-25", name: "Christmas Day", isRecurring: true },
+      { date: "2026-01-01", name: "New Year Day", isRecurring: true }
+    ]
+  })
 });
 ```
 
