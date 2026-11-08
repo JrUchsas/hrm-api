@@ -1,6 +1,6 @@
 # HRM-Api - Authentication, RBAC & Attendance Management API
 
-A high-performance, secure .NET 10 Minimal API microservice providing enterprise **Authentication, Role-Based Access Control (RBAC), Password Reset, and Daily Attendance Management** capabilities backed by **MongoDB**.
+A high-performance, secure .NET 10 Minimal API microservice providing enterprise **Authentication, Role-Based Access Control (RBAC), Password Reset, Daily Attendance Management, and Leave Management (Sick & Casual Leave)** capabilities backed by **MongoDB**.
 
 ---
 
@@ -41,7 +41,8 @@ d:\All Codes\Projects\
 │   │   ├── RolePermission.cs             # Role-to-Permission junction model
 │   │   ├── RefreshToken.cs               # Refresh token tracking & rotation state
 │   │   ├── PasswordResetToken.cs         # SHA-256 hashed password reset token model
-│   │   └── Attendance.cs                 # Attendance, AttendanceSettings, Holiday, AttendanceStatus enum & all DTOs
+│   │   ├── Attendance.cs                 # Attendance, AttendanceSettings, Holiday, AttendanceStatus enum & all DTOs
+│   │   └── LeaveModels.cs                # LeaveType, LeaveStatus, LeaveBalance, LeaveRequest, DTOs
 │   ├── Services\
 │   │   ├── AuthService.cs                # Access/refresh token creation & validation
 │   │   ├── AuthEndpoints.cs              # Authentication endpoint route definitions
@@ -54,7 +55,11 @@ d:\All Codes\Projects\
 │   │   ├── MailtrapEmailService.cs       # SMTP email service implementation
 │   │   ├── MailgunEmailService.cs        # Mailgun HTTP API service implementation
 │   │   ├── AttendanceService.cs          # Core attendance business logic (check-in/out, reports, settings)
-│   │   └── AttendanceEndpoints.cs        # Attendance API endpoint route definitions
+│   │   ├── AttendanceEndpoints.cs        # Attendance API endpoint route definitions
+│   │   ├── LeaveService.cs               # Leave balance, application, approval logic
+│   │   └── LeaveEndpoints.cs             # Leave Management API endpoint route definitions
+│   ├── Endpoints\
+│   │   ├── LeaveEndpoints.cs             # Leave Management API endpoint route definitions
 │   └── Health\
 │       └── HealthCheck.cs                # Diagnostics for MongoDB, collections, and JWT
 ```
@@ -152,6 +157,41 @@ d:\All Codes\Projects\
 - `IsRecurring` (`bool`, if true, repeats annually on same month/day)
 - `CreatedAtUtc` (`DateTimeOffset`)
 
+### 11. `LeaveType` (enum)
+- `Sick = 1`
+- `Casual = 2`
+
+### 12. `LeaveStatus` (enum)
+- `Pending = 1`
+- `Approved = 2`
+- `Rejected = 3`
+
+### 13. `LeaveBalance` (`leave_balances` collection)
+- `Id` (`Guid`, stored as BSON string)
+- `UserId` (`Guid`, indexed)
+- `Year` (`int`, calendar year)
+- `TotalSickLeave` (`int`, default 14)
+- `UsedSickLeave` (`int`, default 0)
+- `TotalCasualLeave` (`int`, default 10)
+- `UsedCasualLeave` (`int`, default 0)
+- `CreatedAtUtc` & `UpdatedAtUtc` (`DateTimeOffset`)
+- **Compound Unique Index** on `(UserId, Year)` - one balance per user per year
+- Computed properties: `RemainingSickLeave`, `RemainingCasualLeave`
+
+### 14. `LeaveRequest` (`leave_requests` collection)
+- `Id` (`Guid`, stored as BSON string)
+- `UserId` (`Guid`, indexed)
+- `LeaveType` (`LeaveType` enum)
+- `StartDate` & `EndDate` (`DateOnly`)
+- `DaysCount` (`int`, calculated as EndDate - StartDate + 1)
+- `Reason` (`string`)
+- `Status` (`LeaveStatus` enum, default Pending)
+- `ReviewedByUserId` (`Guid?`, nullable)
+- `ReviewedAtUtc` (`DateTimeOffset?`, nullable)
+- `RejectionReason` (`string?`, required when rejected)
+- `CreatedAtUtc` & `UpdatedAtUtc` (`DateTimeOffset`)
+- **Indexes**: `UserId`, `Status`, `UserId+Status`, `StartDate+EndDate`
+
 ---
 
 ## 🔌 API Endpoints Reference
@@ -221,6 +261,34 @@ d:\All Codes\Projects\
 | `GET /health` | `live` | Liveness probe verifying the ASP.NET Core process is responsive. |
 | `GET /ready` | `ready` | Readiness probe verifying MongoDB ping, collections accessibility, and required indexes. |
 | `GET /config` | `config` | Verifies JWT signing keys and required environment variables. |
+
+### 5. Leave Management Endpoints (`/api/leaves`, `/api/admin/leaves`)
+
+#### User Endpoints (All authenticated roles: `user`, `hr manager`, `super admin`)
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/leaves/balance` | `[Auth]` | Get current user's leave balances for current year. Auto-creates with defaults (Sick: 14, Casual: 10) if not exists. |
+| `GET` | `/api/leaves/my-history` | `[Auth]` | Get current user's leave application history with pagination. |
+| `POST` | `/api/leaves/apply` | `[Auth]` | Submit new leave application. Validates dates, balance, and overlapping leaves. |
+
+#### HR / Admin Endpoints (Requires `super admin` or `hr manager` role)
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/admin/leaves/pending` | `HrOrAdmin` | View all pending leave requests across company with applicant details. |
+| `POST` | `/api/admin/leaves/{id}/review` | `HrOrAdmin` | Approve or reject a leave request. Approve: atomically deducts balance. Reject: requires reason, no balance change. |
+
+**Leave Application Validation:**
+- `EndDate` must be ≥ `StartDate`
+- `DaysCount` = `EndDate - StartDate + 1`
+- Must not exceed remaining balance for the leave type
+- No overlapping `Pending` or `Approved` leaves for the same user
+
+**Default Quotas (per calendar year):**
+- Sick Leave: 14 days
+- Casual Leave: 10 days
+- Balance records auto-created on first access if missing
 
 ---
 
@@ -514,6 +582,66 @@ const updateSettings = await fetch('https://hrm-api-tjfa.onrender.com/api/attend
       { date: "2026-12-25", name: "Christmas Day", isRecurring: true },
       { date: "2026-01-01", name: "New Year Day", isRecurring: true }
     ]
+  })
+});
+```
+
+### Example: Leave Management Flow
+```javascript
+// User: Check leave balance
+const balance = await fetch('https://hrm-api-tjfa.onrender.com/api/leaves/balance', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { remainingSickLeave, remainingCasualLeave } = await balance.json();
+
+// User: Apply for leave
+const applyLeave = await fetch('https://hrm-api-tjfa.onrender.com/api/leaves/apply', {
+  method: 'POST',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`
+  },
+  body: JSON.stringify({ 
+    leaveType: 1, // 1=Sick, 2=Casual
+    startDate: "2026-11-15",
+    endDate: "2026-11-17",
+    reason: "Medical appointment"
+  })
+});
+const leaveRequest = await applyLeave.json();
+
+// User: View own leave history
+const history = await fetch('https://hrm-api-tjfa.onrender.com/api/leaves/my-history?page=1&pageSize=10', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { requests } = await history.json();
+
+// HR/Admin: View all pending requests
+const pending = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/leaves/pending', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { requests: pendingRequests } = await pending.json();
+
+// HR/Admin: Approve a leave request
+const approve = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leaves/${leaveRequest.id}/review`, {
+  method: 'POST',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${adminAccessToken}`
+  },
+  body: JSON.stringify({ approve: true })
+});
+
+// HR/Admin: Reject a leave request
+const reject = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leaves/${leaveRequest.id}/review`, {
+  method: 'POST',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${adminAccessToken}`
+  },
+  body: JSON.stringify({ 
+    approve: false, 
+    rejectionReason: "Insufficient team coverage during that period" 
   })
 });
 ```
