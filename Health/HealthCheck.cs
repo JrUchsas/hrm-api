@@ -6,147 +6,61 @@ using HrmApi.Models;
 
 namespace HrmApi.Health;
 
-public sealed class ComprehensiveHealthCheck(
-    IMongoClient mongoClient,
-    IConfiguration configuration,
-    MongoDbContext dbContext) : IHealthCheck
+/// <summary>
+/// Lightweight liveness check - only confirms the application process is running.
+/// Does NOT check any external dependencies. Used by Render to detect if the process is alive.
+/// </summary>
+public sealed class LivenessHealthCheck : IHealthCheck
 {
-    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
+    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
-        var results = new Dictionary<string, object>();
-        var errors = new List<string>();
-
-        // 1. MongoDB Connection & Ping
-        try
-        {
-            var databaseName = configuration["MongoDB:Database"] ?? "hrmdb";
-            var database = mongoClient.GetDatabase(databaseName);
-            await database.RunCommandAsync<BsonDocument>(new BsonDocument("ping", 1), cancellationToken: cancellationToken);
-            results["mongodb_ping"] = "OK";
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"MongoDB ping failed: {ex.Message}");
-            results["mongodb_ping"] = "FAILED";
-        }
-
-        // 2. Database Collections Access
-        try
-        {
-            var usersCount = await dbContext.Users.CountDocumentsAsync(FilterDefinition<User>.Empty, cancellationToken: cancellationToken);
-            var rolesCount = await dbContext.Roles.CountDocumentsAsync(FilterDefinition<Role>.Empty, cancellationToken: cancellationToken);
-            var permissionsCount = await dbContext.Permissions.CountDocumentsAsync(FilterDefinition<Permission>.Empty, cancellationToken: cancellationToken);
-            results["collections_accessible"] = "OK";
-            results["collections_stats"] = new { users = usersCount, roles = rolesCount, permissions = permissionsCount };
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"Collections access failed: {ex.Message}");
-            results["collections_accessible"] = "FAILED";
-        }
-
-        // 3. Indexes Exist
-        try
-        {
-            var userIndexes = await dbContext.Users.Indexes.ListAsync(cancellationToken: cancellationToken);
-            var roleIndexes = await dbContext.Roles.Indexes.ListAsync(cancellationToken: cancellationToken);
-            var permissionIndexes = await dbContext.Permissions.Indexes.ListAsync(cancellationToken: cancellationToken);
-
-            var userIndexList = await userIndexes.ToListAsync(cancellationToken);
-            var roleIndexList = await roleIndexes.ToListAsync(cancellationToken);
-            var permissionIndexList = await permissionIndexes.ToListAsync(cancellationToken);
-
-            results["indexes"] = new
-            {
-                users = userIndexList.Count,
-                roles = roleIndexList.Count,
-                permissions = permissionIndexList.Count
-            };
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"Indexes check failed: {ex.Message}");
-            results["indexes"] = "FAILED";
-        }
-
-        // 4. JWT Configuration
-        try
-        {
-            var jwtKey = configuration["Auth:JwtKey"];
-            var issuer = configuration["Auth:Issuer"] ?? "HrmApi";
-            var audience = configuration["Auth:Audience"] ?? "HrmApi";
-
-            if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
-            {
-                errors.Add("JWT key missing or too short (must be 32+ chars)");
-                results["jwt_config"] = "INVALID";
-            }
-            else
-            {
-                results["jwt_config"] = new { issuer, audience, key_length = jwtKey.Length };
-            }
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"JWT config check failed: {ex.Message}");
-            results["jwt_config"] = "FAILED";
-        }
-
-        // 5. Write Test (optional - lightweight)
-        try
-        {
-            var testCollection = dbContext.Users.Database.GetCollection<BsonDocument>("__health_check_test");
-            var testDoc = new BsonDocument { { "test", true }, { "timestamp", new BsonDateTime(DateTimeOffset.UtcNow.UtcDateTime) } };
-            await testCollection.InsertOneAsync(testDoc, cancellationToken: cancellationToken);
-            await testCollection.DeleteOneAsync(Builders<BsonDocument>.Filter.Eq("_id", testDoc["_id"]), cancellationToken: cancellationToken);
-            results["write_test"] = "OK";
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"Write test failed: {ex.Message}");
-            results["write_test"] = "FAILED";
-        }
-
-        // 6. Connection String Validation
-        try
-        {
-            var connString = configuration.GetConnectionString("MongoDB");
-            if (string.IsNullOrWhiteSpace(connString))
-            {
-                errors.Add("MongoDB connection string not configured");
-                results["connection_string"] = "MISSING";
-            }
-            else
-            {
-                var parsed = MongoUrl.Create(connString);
-                results["connection_string"] = new
-                {
-                    host = parsed.Server.Host,
-                    database = parsed.DatabaseName,
-                    tls = parsed.UseTls
-                };
-            }
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"Connection string validation failed: {ex.Message}");
-            results["connection_string"] = "INVALID";
-        }
-
-        // Determine overall status
-        var hasErrors = errors.Count > 0;
-        var status = hasErrors ? HealthStatus.Unhealthy : HealthStatus.Healthy;
-
-        var description = hasErrors
-            ? string.Join("; ", errors)
-            : "All health checks passed";
-
-        return new HealthCheckResult(status, description, data: results);
+        return Task.FromResult(HealthCheckResult.Healthy("Application is running"));
     }
 }
 
-// Additional lightweight health checks for specific components
+/// <summary>
+/// Health check publisher that logs health check failures for observability.
+/// Does not log sensitive information.
+/// </summary>
+public sealed class LoggingHealthCheckPublisher(
+    ILogger<LoggingHealthCheckPublisher> logger) : IHealthCheckPublisher
+{
+    public Task PublishAsync(HealthReport report, CancellationToken cancellationToken)
+    {
+        if (report.Status == HealthStatus.Unhealthy)
+        {
+            var failedChecks = report.Entries
+                .Where(e => e.Value.Status == HealthStatus.Unhealthy)
+                .Select(e => $"{e.Key}: {e.Value.Description}")
+                .ToList();
 
+            logger.LogWarning("Health check failed: {FailedChecks}. Total duration: {Duration}",
+                string.Join(", ", failedChecks), report.TotalDuration);
+        }
+        else if (report.Status == HealthStatus.Degraded)
+        {
+            var degradedChecks = report.Entries
+                .Where(e => e.Value.Status == HealthStatus.Degraded)
+                .Select(e => $"{e.Key}: {e.Value.Description}")
+                .ToList();
+
+            logger.LogWarning("Health check degraded: {DegradedChecks}. Total duration: {Duration}",
+                string.Join(", ", degradedChecks), report.TotalDuration);
+        }
+        else
+        {
+            logger.LogInformation("Health check healthy. Checks: {Count}. Total duration: {Duration}",
+                report.Entries.Count, report.TotalDuration);
+        }
+
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Readiness check - confirms the application can serve requests by verifying database connectivity.
+/// Used by Render to determine if the service is ready to receive traffic.
+/// </summary>
 public sealed class DatabaseHealthCheck(IMongoClient mongoClient, IConfiguration configuration) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
@@ -165,6 +79,10 @@ public sealed class DatabaseHealthCheck(IMongoClient mongoClient, IConfiguration
     }
 }
 
+/// <summary>
+/// Comprehensive configuration check - validates JWT key, connection string, and other required configuration.
+/// Used for /config endpoint to diagnose configuration issues.
+/// </summary>
 public sealed class ConfigurationHealthCheck(IConfiguration configuration) : IHealthCheck
 {
     public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)

@@ -45,9 +45,19 @@ if (string.IsNullOrWhiteSpace(mongoConnectionString))
 builder.Services.AddSingleton<IMongoClient>(_ => new MongoClient(mongoConnectionString));
 builder.Services.AddScoped<MongoDbContext>();
 builder.Services.AddHealthChecks()
-    .AddCheck<ComprehensiveHealthCheck>("comprehensive", tags: ["live", "ready"])
-    .AddCheck<DatabaseHealthCheck>("database", tags: ["ready"])
-    .AddCheck<ConfigurationHealthCheck>("configuration", tags: ["config"]);
+    .AddCheck<LivenessHealthCheck>("liveness", tags: ["live"], timeout: TimeSpan.FromSeconds(2))
+    .AddCheck<DatabaseHealthCheck>("database", tags: ["ready"], timeout: TimeSpan.FromSeconds(5))
+    .AddCheck<ConfigurationHealthCheck>("configuration", tags: ["config"], timeout: TimeSpan.FromSeconds(2));
+
+// Configure health check publisher options
+builder.Services.Configure<HealthCheckPublisherOptions>(options =>
+{
+    options.Period = TimeSpan.FromSeconds(30);
+    options.Delay = TimeSpan.FromSeconds(5);
+});
+
+// Register health check publisher for structured logging
+builder.Services.AddSingleton<IHealthCheckPublisher, LoggingHealthCheckPublisher>();
 
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<PermissionService>();
@@ -69,7 +79,7 @@ else
 }
 
 // Register RBAC authorization handler and policies
-builder.Services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
+builder.Services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
 builder.Services.AddRbacAuthorization();
 
@@ -193,3 +203,6 @@ app.MapRbacEndpoints();
 app.MapAttendanceEndpoints();
 
 app.Run();
+
+// Make Program class visible to test projects
+public partial class Program { }
