@@ -262,22 +262,42 @@ d:\All Codes\Projects\
 | `GET /ready` | `ready` | Readiness probe verifying MongoDB ping, collections accessibility, and required indexes. |
 | `GET /config` | `config` | Verifies JWT signing keys and required environment variables. |
 
-### 5. Leave Management Endpoints (`/api/leaves`, `/api/admin/leaves`)
+### 5. Leave Management Endpoints (`/api/leaves`, `/api/admin/leaves`, `/api/leave`, `/api/admin/leave`)
 
 #### User Endpoints (All authenticated roles: `user`, `hr manager`, `super admin`)
 
+**Primary Routes (`/api/leaves/*`):**
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/leaves/balance` | `[Auth]` | Get current user's leave balances for current year. Auto-creates with defaults (Sick: 14, Casual: 10) if not exists. |
 | `GET` | `/api/leaves/my-history` | `[Auth]` | Get current user's leave application history with pagination. |
 | `POST` | `/api/leaves/apply` | `[Auth]` | Submit new leave application. Validates dates, balance, and overlapping leaves. |
+| `DELETE` | `/api/leaves/{id}/cancel` | `[Auth]` | Cancel a pending leave request (only by owner). |
+
+**Frontend-Compatible Aliases (`/api/leave/*`):**
+These routes match the frontend's expected API paths.
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/leave/types` | `[Auth]` | Get leave type configurations with balances. Returns: `[{id, name, maxDays, usedDays, remainingDays}, ...]` |
+| `GET` | `/api/leave/my` | `[Auth]` | Get current user's leave application history with pagination (alias for `/my-history`). |
+| `GET` | `/api/leave/summary` | `[Auth]` | Get summary: sick/casual balances + pending request count. |
+| `POST` | `/api/leave/apply` | `[Auth]` | Submit new leave application (alias for `/api/leaves/apply`). |
+| `DELETE` | `/api/leave/{id}/cancel` | `[Auth]` | Cancel a pending leave request (alias for `/api/leaves/{id}/cancel`). |
 
 #### HR / Admin Endpoints (Requires `super admin` or `hr manager` role)
 
+**Primary Routes (`/api/admin/leaves/*`):**
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/admin/leaves/pending` | `HrOrAdmin` | View all pending leave requests across company with applicant details. |
 | `POST` | `/api/admin/leaves/{id}/review` | `HrOrAdmin` | Approve or reject a leave request. Approve: atomically deducts balance. Reject: requires reason, no balance change. |
+
+**Frontend-Compatible Aliases (`/api/admin/leave/*`):**
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/admin/leave/pending` | `HrOrAdmin` | View all pending leave requests (alias for `/api/admin/leaves/pending`). |
+| `POST` | `/api/admin/leave/{id}/approve` | `HrOrAdmin` | Approve a leave request (deducts balance atomically). |
+| `POST` | `/api/admin/leave/{id}/reject` | `HrOrAdmin` | Reject a leave request (requires `rejectionReason`, no balance change). |
 
 **Leave Application Validation:**
 - `EndDate` must be ≥ `StartDate`
@@ -588,14 +608,27 @@ const updateSettings = await fetch('https://hrm-api-tjfa.onrender.com/api/attend
 
 ### Example: Leave Management Flow
 ```javascript
-// User: Check leave balance
+// User: Check leave balance (primary route)
 const balance = await fetch('https://hrm-api-tjfa.onrender.com/api/leaves/balance', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
 });
 const { remainingSickLeave, remainingCasualLeave } = await balance.json();
 
-// User: Apply for leave
-const applyLeave = await fetch('https://hrm-api-tjfa.onrender.com/api/leaves/apply', {
+// User: Get leave types with balances (frontend-compatible)
+const types = await fetch('https://hrm-api-tjfa.onrender.com/api/leave/types', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const leaveTypes = await types.json();
+// Returns: [{id: 1, name: "Sick", maxDays: 14, usedDays: 3, remainingDays: 11}, ...]
+
+// User: Get leave summary (balances + pending count)
+const summary = await fetch('https://hrm-api-tjfa.onrender.com/api/leave/summary', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { sickLeave, casualLeave, pendingRequests } = await summary.json();
+
+// User: Apply for leave (frontend-compatible route)
+const applyLeave = await fetch('https://hrm-api-tjfa.onrender.com/api/leave/apply', {
   method: 'POST',
   headers: { 
     'Content-Type': 'application/json',
@@ -610,37 +643,42 @@ const applyLeave = await fetch('https://hrm-api-tjfa.onrender.com/api/leaves/app
 });
 const leaveRequest = await applyLeave.json();
 
-// User: View own leave history
-const history = await fetch('https://hrm-api-tjfa.onrender.com/api/leaves/my-history?page=1&pageSize=10', {
+// User: View own leave history (frontend-compatible)
+const history = await fetch('https://hrm-api-tjfa.onrender.com/api/leave/my?page=1&pageSize=10', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
 });
 const { requests } = await history.json();
 
-// HR/Admin: View all pending requests
-const pending = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/leaves/pending', {
+// User: Cancel a pending leave request
+const cancel = await fetch(`https://hrm-api-tjfa.onrender.com/api/leave/${leaveRequest.id}/cancel`, {
+  method: 'DELETE',
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { message, cancelled } = await cancel.json();
+
+// HR/Admin: View all pending requests (frontend-compatible)
+const pending = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/leave/pending', {
   headers: { 'Authorization': `Bearer ${adminAccessToken}` }
 });
 const { requests: pendingRequests } = await pending.json();
 
-// HR/Admin: Approve a leave request
-const approve = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leaves/${leaveRequest.id}/review`, {
+// HR/Admin: Approve a leave request (frontend-compatible)
+const approve = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leave/${leaveRequest.id}/approve`, {
   method: 'POST',
   headers: { 
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${adminAccessToken}`
-  },
-  body: JSON.stringify({ approve: true })
+  }
 });
 
-// HR/Admin: Reject a leave request
-const reject = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leaves/${leaveRequest.id}/review`, {
+// HR/Admin: Reject a leave request (frontend-compatible)
+const reject = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leave/${leaveRequest.id}/reject`, {
   method: 'POST',
   headers: { 
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${adminAccessToken}`
   },
   body: JSON.stringify({ 
-    approve: false, 
     rejectionReason: "Insufficient team coverage during that period" 
   })
 });
