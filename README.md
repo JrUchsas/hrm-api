@@ -328,6 +328,37 @@ All leave request responses now include a `StatusDisplay` field that maps intern
 
 This matches the frontend's expected display text (e.g., "Awaiting review" sub-label for pending requests).
 
+### 6. Reports & Analytics Endpoints (`/api/reports`, `/api/admin/reports`)
+
+These endpoints provide workforce analytics and operational reports for dashboards and management.
+
+#### User Endpoints (All authenticated roles: `user`, `hr manager`, `super admin`)
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/reports/summary` | `[Auth]` | Workforce summary: headcount, attendance rate %, average hours per day. Query params: `from`, `to` (date range, defaults to last 30 days). |
+| `GET` | `/api/reports/attendance-trend` | `[Auth]` | Daily attendance trend for charts. Query param: `days` (default 30, max 365). Returns daily Present/Late/Absent/OnLeave/NoRecord counts and attendance rate. |
+| `GET` | `/api/reports/late-employees` | `[Auth]` | Paginated list of late entries. Query params: `from`, `to`, `page`, `pageSize`. |
+| `GET` | `/api/reports/employees-on-leave` | `[Auth]` | Paginated list of employees on leave. Query params: `from`, `to`, `page`, `pageSize`. |
+| `GET` | `/api/reports/time-worked` | `[Auth]` | Time worked per user (total hours, days worked, avg hours/day, late days, on-leave days). Query params: `from`, `to`, `page`, `pageSize`. |
+
+#### HR / Admin Endpoints (Requires `super admin` or `hr manager` role)
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/admin/reports/department-headcount` | `HrOrAdmin` | Headcount grouped by department/role. |
+| `GET` | `/api/admin/reports/absent-employees` | `HrOrAdmin` | Paginated list of absent employees (no check-in or marked absent). Query params: `from`, `to`, `page`, `pageSize`. |
+| `GET` | `/api/admin/reports/incomplete-employees` | `HrOrAdmin` | Paginated list of incomplete work days (checked in but below minimum hours). Query params: `from`, `to`, `page`, `pageSize`. |
+| `GET` | `/api/admin/reports/holiday-report` | `HrOrAdmin` | Holiday list for a month. Query params: `year`, `month`. |
+
+**Date Range Parameters** (used by most endpoints):
+- `from` (optional): Start date in `yyyy-MM-dd` format. Defaults to 30 days ago.
+- `to` (optional): End date in `yyyy-MM-dd` format. Defaults to today.
+
+**Pagination Parameters** (used by paginated endpoints):
+- `page` (default: 1, min: 1)
+- `pageSize` (default: 20, min: 1, max: 100)
+
 ---
 
 ## 👥 Default Seeded Users & Test Credentials
@@ -716,7 +747,65 @@ const reject = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leave/${
     rejectionReason: "Insufficient team coverage during that period" 
   })
 });
-```
+
+// ============ REPORTS EXAMPLES ============
+
+// User: Get workforce summary (last 30 days by default)
+const summary = await fetch('https://hrm-api-tjfa.onrender.com/api/reports/summary', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { headcount, attendanceRate, averageHoursPerDay, periodStart, periodEnd } = await summary.json();
+
+// User: Get attendance trend for chart (last 30 days)
+const trend = await fetch('https://hrm-api-tjfa.onrender.com/api/reports/attendance-trend?days=30', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { dataPoints } = await trend.json();
+// dataPoints: [{date, present, late, absent, onLeave, noRecord, attendanceRate, isWorkingDay, isHoliday}, ...]
+
+// User: Get late employees (last 30 days, paginated)
+const lateEmployees = await fetch('https://hrm-api-tjfa.onrender.com/api/reports/late-employees?page=1&pageSize=20', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { entries: lateEntries, totalCount } = await lateEmployees.json();
+
+// User: Get employees on leave (last 30 days, paginated)
+const onLeave = await fetch('https://hrm-api-tjfa.onrender.com/api/reports/employees-on-leave?page=1&pageSize=20', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { entries: leaveEntries } = await onLeave.json();
+
+// User: Get time worked per user (last 30 days, paginated)
+const timeWorked = await fetch('https://hrm-api-tjfa.onrender.com/api/reports/time-worked?page=1&pageSize=20', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { summaries: timeWorkedSummaries } = await timeWorked.json();
+// Each: {userId, userEmail, totalHours, daysWorked, averageHoursPerDay, lateDays, onLeaveDays}
+
+// Admin: Get department headcount
+const deptHeadcount = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/reports/department-headcount', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { departments, totalHeadcount } = await deptHeadcount.json();
+
+// Admin: Get absent employees (last 30 days, paginated)
+const absentEmployees = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/reports/absent-employees?page=1&pageSize=20', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { entries: absentEntries, totalCount: absentTotal } = await absentEmployees.json();
+
+// Admin: Get incomplete employees (last 30 days, paginated)
+const incompleteEmployees = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/reports/incomplete-employees?page=1&pageSize=20', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { entries: incompleteEntries } = await incompleteEmployees.json();
+
+// Admin: Get holiday report for November 2026
+const holidayReport = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/reports/holiday-report?year=2026&month=11', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { holidays } = await holidayReport.json();
+// Each: {name, date, isRecurring, type: "Static"|"Recurring"}
 
 ### CORS Configuration
 For production, update `Program.cs` to restrict origins:

@@ -65,6 +65,7 @@ builder.Services.AddScoped<RbacSeedService>();
 builder.Services.AddScoped<PasswordResetTokenService>();
 builder.Services.AddScoped<AttendanceService>();
 builder.Services.AddScoped<LeaveService>();
+builder.Services.AddScoped<ReportsService>();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddHttpClient();
 
@@ -209,6 +210,9 @@ app.MapAttendanceEndpoints();
 
 // Map Leave endpoints
 app.MapLeaveEndpoints();
+
+// Map Reports endpoints
+app.MapReportsEndpoints();
 
 app.Run();
 
