@@ -64,6 +64,7 @@ builder.Services.AddScoped<PermissionService>();
 builder.Services.AddScoped<RbacSeedService>();
 builder.Services.AddScoped<PasswordResetTokenService>();
 builder.Services.AddScoped<AttendanceService>();
+builder.Services.AddScoped<LeaveService>();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddHttpClient();
 
@@ -82,6 +83,10 @@ else
 builder.Services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
 builder.Services.AddRbacAuthorization();
+
+// Add HR/Admin policy for leave management (role names as seeded: "super admin", "hr manager")
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("HrOrAdmin", policy => policy.RequireRole("super admin", "hr manager"));
 
 var jwtKey = builder.Configuration["Auth:JwtKey"];
 if (string.IsNullOrWhiteSpace(jwtKey))
@@ -201,6 +206,9 @@ app.MapRbacEndpoints();
 
 // Map Attendance endpoints
 app.MapAttendanceEndpoints();
+
+// Map Leave endpoints
+app.MapLeaveEndpoints();
 
 app.Run();
 

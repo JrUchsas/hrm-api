@@ -22,6 +22,8 @@ public sealed class MongoDbContext
     public IMongoCollection<PasswordResetToken> PasswordResetTokens => _database.GetCollection<PasswordResetToken>("password_reset_tokens");
     public IMongoCollection<Attendance> Attendance => _database.GetCollection<Attendance>("attendance");
     public IMongoCollection<AttendanceSettings> AttendanceSettings => _database.GetCollection<AttendanceSettings>("attendance_settings");
+    public IMongoCollection<LeaveBalance> LeaveBalances => _database.GetCollection<LeaveBalance>("leave_balances");
+    public IMongoCollection<LeaveRequest> LeaveRequests => _database.GetCollection<LeaveRequest>("leave_requests");
 
     public async Task CreateIndexesAsync()
     {
@@ -79,5 +81,21 @@ public sealed class MongoDbContext
         await Attendance.Indexes.CreateOneAsync(new CreateIndexModel<Attendance>(attendanceUserIndex));
         var attendanceStatusIndex = Builders<Attendance>.IndexKeys.Ascending(a => a.Status);
         await Attendance.Indexes.CreateOneAsync(new CreateIndexModel<Attendance>(attendanceStatusIndex));
+
+        // Leave Balance indexes
+        var leaveBalanceUserYearIndex = Builders<LeaveBalance>.IndexKeys.Ascending(lb => lb.UserId).Ascending(lb => lb.Year);
+        await LeaveBalances.Indexes.CreateOneAsync(new CreateIndexModel<LeaveBalance>(leaveBalanceUserYearIndex, new CreateIndexOptions { Unique = true }));
+        var leaveBalanceUserIndex = Builders<LeaveBalance>.IndexKeys.Ascending(lb => lb.UserId);
+        await LeaveBalances.Indexes.CreateOneAsync(new CreateIndexModel<LeaveBalance>(leaveBalanceUserIndex));
+
+        // Leave Request indexes
+        var leaveRequestUserIndex = Builders<LeaveRequest>.IndexKeys.Ascending(lr => lr.UserId);
+        await LeaveRequests.Indexes.CreateOneAsync(new CreateIndexModel<LeaveRequest>(leaveRequestUserIndex));
+        var leaveRequestStatusIndex = Builders<LeaveRequest>.IndexKeys.Ascending(lr => lr.Status);
+        await LeaveRequests.Indexes.CreateOneAsync(new CreateIndexModel<LeaveRequest>(leaveRequestStatusIndex));
+        var leaveRequestUserStatusIndex = Builders<LeaveRequest>.IndexKeys.Ascending(lr => lr.UserId).Ascending(lr => lr.Status);
+        await LeaveRequests.Indexes.CreateOneAsync(new CreateIndexModel<LeaveRequest>(leaveRequestUserStatusIndex));
+        var leaveRequestDateRangeIndex = Builders<LeaveRequest>.IndexKeys.Ascending(lr => lr.StartDate).Ascending(lr => lr.EndDate);
+        await LeaveRequests.Indexes.CreateOneAsync(new CreateIndexModel<LeaveRequest>(leaveRequestDateRangeIndex));
     }
 }
