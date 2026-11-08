@@ -320,6 +320,68 @@ public sealed class LeaveService(MongoDbContext db)
     }
 
     /// <summary>
+    /// Gets the count of pending leave requests for a specific user.
+    /// </summary>
+    public async Task<int> GetPendingCountForUserAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        var filter = Builders<LeaveRequest>.Filter.And(
+            Builders<LeaveRequest>.Filter.Eq(lr => lr.UserId, userId),
+            Builders<LeaveRequest>.Filter.Eq(lr => lr.Status, LeaveStatus.Pending)
+        );
+
+        return (int)await db.LeaveRequests.CountDocumentsAsync(filter, cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Cancels a pending leave request by the owner.
+    /// </summary>
+    public async Task<LeaveRequestResponse> CancelLeaveAsync(
+        Guid requestId,
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        var request = await db.LeaveRequests
+            .Find(lr => lr.Id == requestId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (request == null)
+        {
+            throw new KeyNotFoundException("Leave request not found.");
+        }
+
+        if (request.UserId != userId)
+        {
+            throw new InvalidOperationException("You can only cancel your own leave requests.");
+        }
+
+        if (request.Status != LeaveStatus.Pending)
+        {
+            throw new InvalidOperationException($"Cannot cancel a leave request that is already {request.Status}.");
+        }
+
+        request.Status = LeaveStatus.Cancelled;
+        request.UpdatedAtUtc = DateTimeOffset.UtcNow;
+
+        await db.LeaveRequests.ReplaceOneAsync(
+            lr => lr.Id == request.Id,
+            request,
+            cancellationToken: cancellationToken);
+
+        // Get user email for response
+        var user = await db.Users
+            .Find(u => u.Id == userId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var userDict = new Dictionary<Guid, string>();
+        if (user != null)
+        {
+            userDict[userId] = user.Email;
+        }
+
+        return MapToResponse(request, userDict);
+    }
+
+    /// <summary>
     /// Adjusts an employee's leave balance (for HR/Admin).
     /// </summary>
     public async Task<LeaveBalanceResponse> AdjustBalanceAsync(
