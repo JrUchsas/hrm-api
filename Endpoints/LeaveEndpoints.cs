@@ -405,6 +405,59 @@ public static class LeaveEndpoints
                 return Results.BadRequest(ex.Message);
             }
         }).WithName("RejectLeave");
+
+        // POST /api/admin/leave/balance/adjust - Adjust user's leave balance (HR/Admin)
+        adminAliasGroup.MapPost("/balance/adjust", async (
+            AdjustLeaveBalanceDto request,
+            ClaimsPrincipal user,
+            LeaveService leaveService,
+            CancellationToken cancellationToken) =>
+        {
+            var adminUserId = GetUserId(user);
+
+            if (request.Year < 2000 || request.Year > 2100)
+            {
+                return Results.BadRequest("Invalid year. Must be between 2000 and 2100.");
+            }
+
+            if (request.TotalSickLeave.HasValue && request.TotalSickLeave < 0)
+            {
+                return Results.BadRequest("Total sick leave cannot be negative.");
+            }
+            if (request.UsedSickLeave.HasValue && request.UsedSickLeave < 0)
+            {
+                return Results.BadRequest("Used sick leave cannot be negative.");
+            }
+            if (request.TotalCasualLeave.HasValue && request.TotalCasualLeave < 0)
+            {
+                return Results.BadRequest("Total casual leave cannot be negative.");
+            }
+            if (request.UsedCasualLeave.HasValue && request.UsedCasualLeave < 0)
+            {
+                return Results.BadRequest("Used casual leave cannot be negative.");
+            }
+
+            try
+            {
+                var balance = await leaveService.AdjustBalanceAsync(
+                    request.UserId,
+                    request.Year,
+                    request.TotalSickLeave,
+                    request.UsedSickLeave,
+                    request.TotalCasualLeave,
+                    request.UsedCasualLeave,
+                    cancellationToken);
+                return Results.Ok(balance);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ex.Message);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.BadRequest(ex.Message);
+            }
+        }).WithName("AdjustLeaveBalance");
     }
 
     private static Guid GetUserId(ClaimsPrincipal user)

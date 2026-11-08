@@ -210,3 +210,13 @@ public sealed class PendingLeaveRequestsResponse
     public List<LeaveRequestResponse> Requests { get; set; } = new();
     public int TotalCount { get; set; }
 }
+
+public sealed class AdjustLeaveBalanceDto
+{
+    public Guid UserId { get; set; }
+    public int Year { get; set; }
+    public int? TotalSickLeave { get; set; }
+    public int? UsedSickLeave { get; set; }
+    public int? TotalCasualLeave { get; set; }
+    public int? UsedCasualLeave { get; set; }
+}
