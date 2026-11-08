@@ -192,6 +192,13 @@ d:\All Codes\Projects\
 - `CreatedAtUtc` & `UpdatedAtUtc` (`DateTimeOffset`)
 - **Indexes**: `UserId`, `Status`, `UserId+Status`, `StartDate+EndDate`
 
+### 15. `LeaveRequestResponse` (API response DTO)
+All leave request API responses include a computed `StatusDisplay` field for UI-friendly status labels:
+- `Pending` → **"Awaiting review"**
+- `Approved` → **"Approved"**
+- `Rejected` → **"Rejected"**
+- `Cancelled` → **"Cancelled"**
+
 ---
 
 ## 🔌 API Endpoints Reference
@@ -295,7 +302,7 @@ These routes match the frontend's expected API paths.
 **Frontend-Compatible Aliases (`/api/admin/leave/*`):**
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/admin/leave/pending` | `HrOrAdmin` | View all pending leave requests (alias for `/api/admin/leaves/pending`). |
+| `GET` | `/api/admin/leave/pending` | `HrOrAdmin` | View leave requests with optional status filter and pagination. Query params: `status` (Pending\|Approved\|Rejected\|Cancelled), `page` (default 1), `pageSize` (default 50, max 100). Omit `status` for all statuses. |
 | `POST` | `/api/admin/leave/{id}/approve` | `HrOrAdmin` | Approve a leave request (deducts balance atomically). |
 | `POST` | `/api/admin/leave/{id}/reject` | `HrOrAdmin` | Reject a leave request (requires `rejectionReason`, no balance change). |
 
@@ -309,6 +316,17 @@ These routes match the frontend's expected API paths.
 - Sick Leave: 14 days
 - Casual Leave: 10 days
 - Balance records auto-created on first access if missing
+
+**Response Enhancement:**
+All leave request responses now include a `StatusDisplay` field that maps internal status enums to UI-friendly labels:
+| Internal Status | `StatusDisplay` Value |
+| :--- | :--- |
+| `Pending` | `"Awaiting review"` |
+| `Approved` | `"Approved"` |
+| `Rejected` | `"Rejected"` |
+| `Cancelled` | `"Cancelled"` |
+
+This matches the frontend's expected display text (e.g., "Awaiting review" sub-label for pending requests).
 
 ---
 
@@ -649,6 +667,10 @@ const history = await fetch('https://hrm-api-tjfa.onrender.com/api/leave/my?page
 });
 const { requests } = await history.json();
 
+// Each request includes StatusDisplay field:
+// "Awaiting review" (for Pending), "Approved", "Rejected", or "Cancelled"
+requests.forEach(r => console.log(`${r.leaveType}: ${r.statusDisplay}`));
+
 // User: Cancel a pending leave request
 const cancel = await fetch(`https://hrm-api-tjfa.onrender.com/api/leave/${leaveRequest.id}/cancel`, {
   method: 'DELETE',
@@ -661,6 +683,18 @@ const pending = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/leave/p
   headers: { 'Authorization': `Bearer ${adminAccessToken}` }
 });
 const { requests: pendingRequests } = await pending.json();
+
+// HR/Admin: View approved requests with pagination (new status filter)
+const approved = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/leave/pending?status=Approved&page=1&pageSize=20', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { requests: approvedRequests } = await approved.json();
+
+// HR/Admin: View all statuses (All statuses = omit status param)
+const allRequests = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/leave/pending?page=1&pageSize=50', {
+  headers: { 'Authorization': `Bearer ${adminAccessToken}` }
+});
+const { requests: allLeaveRequests, totalCount } = await allRequests.json();
 
 // HR/Admin: Approve a leave request (frontend-compatible)
 const approve = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leave/${leaveRequest.id}/approve`, {
