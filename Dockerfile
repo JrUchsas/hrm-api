@@ -5,16 +5,16 @@ EXPOSE 8080
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY ["ApiApp.csproj", "."]
-RUN dotnet restore "./ApiApp.csproj"
+COPY ["hrm-api.csproj", "."]
+RUN dotnet restore "./hrm-api.csproj"
 COPY . .
 WORKDIR "/src/."
-RUN dotnet build "./ApiApp.csproj" -c Release -o /app/build
+RUN dotnet build "./hrm-api.csproj" -c Release -o /app/build
 
 FROM build AS publish
-RUN dotnet publish "./ApiApp.csproj" -c Release -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "./hrm-api.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
-ENTRYPOINT ["dotnet", "ApiApp.dll"]
+ENTRYPOINT ["dotnet", "hrm-api.dll"]

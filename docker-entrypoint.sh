@@ -1,4 +1,4 @@
 #!/bin/bash
 set -e
 
-dotnet ApiApp.dll
+dotnet hrm-api.dll

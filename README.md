@@ -22,7 +22,7 @@ A high-performance, secure .NET 10 Minimal API microservice providing enterprise
 ```text
 d:\All Codes\Projects\
 ├── HRM-Api\                              # Main Web API Microservice
-│   ├── ApiApp.csproj                     # Web SDK project file (net10.0)
+│   ├── hrm-api.csproj                     # Web SDK project file (net10.0)
 │   ├── Program.cs                        # Application bootstrap, DI, middleware & seeding
 │   ├── Dockerfile                        # Multi-stage container build
 │   ├── docker-entrypoint.sh              # Container startup script
