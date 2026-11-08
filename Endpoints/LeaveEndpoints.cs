@@ -324,10 +324,16 @@ public static class LeaveEndpoints
         // GET /api/admin/leave/pending
         adminAliasGroup.MapGet("/pending", async (
             LeaveService leaveService,
-            CancellationToken cancellationToken) =>
+            LeaveStatus? status = null, // Optional status filter: Pending, Approved, Rejected, Cancelled
+            int page = 1,
+            int pageSize = 50,
+            CancellationToken cancellationToken = default) =>
         {
-            var pending = await leaveService.GetPendingRequestsAsync(cancellationToken);
-            return Results.Ok(pending);
+            if (page < 1) page = 1;
+            if (pageSize < 1 || pageSize > 100) pageSize = 50;
+
+            var result = await leaveService.GetLeaveRequestsAsync(status, page, pageSize, cancellationToken);
+            return Results.Ok(result);
         }).WithName("GetPendingLeaveRequestsAlias");
 
         // POST /api/admin/leave/{id}/approve

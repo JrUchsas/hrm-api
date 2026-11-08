@@ -194,6 +194,16 @@ public sealed class LeaveRequestResponse
     public string? RejectionReason { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
+
+    // Display-friendly status for UI (maps Pending -> "Awaiting review")
+    public string StatusDisplay => Status switch
+    {
+        LeaveStatus.Pending => "Awaiting review",
+        LeaveStatus.Approved => "Approved",
+        LeaveStatus.Rejected => "Rejected",
+        LeaveStatus.Cancelled => "Cancelled",
+        _ => Status.ToString()
+    };
 }
 
 public sealed class LeaveHistoryResponse

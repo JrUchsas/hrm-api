@@ -117,10 +117,8 @@ public sealed class LeaveService(MongoDbContext db)
             throw new ArgumentException("End date must be on or after start date.");
         }
 
-        // Calculate days count
-        var daysCount = dto.StartDate.DayNumber - dto.EndDate.DayNumber * -1; // DayNumber gives days since epoch
-        // Simpler: use DateOnly difference
-        daysCount = dto.EndDate.DayNumber - dto.StartDate.DayNumber + 1;
+        // Calculate days count (inclusive of start and end dates)
+        var daysCount = dto.EndDate.DayNumber - dto.StartDate.DayNumber + 1;
 
         if (daysCount <= 0)
         {
@@ -317,6 +315,52 @@ public sealed class LeaveService(MongoDbContext db)
         }
 
         return MapToResponse(request, userDict);
+    }
+
+    /// <summary>
+    /// Gets leave requests with optional status filter and pagination (for admin).
+    /// </summary>
+    public async Task<PendingLeaveRequestsResponse> GetLeaveRequestsAsync(
+        LeaveStatus? status = null,
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var filterBuilder = Builders<LeaveRequest>.Filter;
+        var filter = filterBuilder.Empty;
+
+        if (status.HasValue)
+        {
+            filter = filterBuilder.Eq(lr => lr.Status, status.Value);
+        }
+
+        var total = await db.LeaveRequests.CountDocumentsAsync(filter, cancellationToken: cancellationToken);
+
+        var requests = await db.LeaveRequests
+            .Find(filter)
+            .SortByDescending(lr => lr.CreatedAtUtc)
+            .Skip((page - 1) * pageSize)
+            .Limit(pageSize)
+            .ToListAsync(cancellationToken);
+
+        // Get user emails for all applicants and reviewers
+        var userIds = requests
+            .Select(r => r.UserId)
+            .Concat(requests.Where(r => r.ReviewedByUserId.HasValue).Select(r => r.ReviewedByUserId!.Value))
+            .Distinct()
+            .ToList();
+
+        var users = await db.Users
+            .Find(u => userIds.Contains(u.Id))
+            .ToListAsync(cancellationToken);
+
+        var userDict = users.ToDictionary(u => u.Id, u => u.Email);
+
+        return new PendingLeaveRequestsResponse
+        {
+            Requests = requests.Select(r => MapToResponse(r, userDict)).ToList(),
+            TotalCount = (int)total
+        };
     }
 
     /// <summary>
