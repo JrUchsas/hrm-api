@@ -176,6 +176,13 @@ public sealed class RbacSeedService(MongoDbContext db, IPasswordHasher<User> pas
                 "Human Resources Manager"
             ),
             (
+                Guid.Parse("c8f7e2d1-4b3a-4e9f-8a7c-1d2e3f4a5b6c"),
+                "pm@company.com",
+                "PmPass123!",
+                "project manager",
+                "Project Manager"
+            ),
+            (
                 Guid.Parse("6ad3da0e-3b91-4657-85d0-258a29f25df3"),
                 "user1@company.com",
                 "UserPass123!",
@@ -255,11 +262,13 @@ public sealed class RbacSeedService(MongoDbContext db, IPasswordHasher<User> pas
 
                 if (!hasRole)
                 {
+                    // Use a well-known system assigner GUID instead of the user assigning their own role
+                    var systemAssignerId = Guid.Parse("00000000-0000-0000-0000-000000000000");
                     await db.UserRoles.InsertOneAsync(new UserRole
                     {
                         UserId = existingUser.Id,
                         RoleId = roleId,
-                        AssignedBy = existingUser.Id
+                        AssignedBy = systemAssignerId
                     }, cancellationToken: cancellationToken);
                 }
             }

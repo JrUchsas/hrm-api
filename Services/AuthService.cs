@@ -76,8 +76,16 @@ public sealed class AuthService(IConfiguration configuration)
             var principal = handler.ValidateToken(token, validationParameters, out _);
             return principal;
         }
-        catch
+        catch (SecurityTokenException)
         {
+            // Expected: expired, invalid signature, wrong issuer/audience
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // Unexpected: log for debugging
+            // Note: In production, use a proper logger instead of Debug.WriteLine
+            System.Diagnostics.Debug.WriteLine($"Token validation error: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }

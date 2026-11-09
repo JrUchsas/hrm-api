@@ -1,14 +1,16 @@
 using HrmApi.Data;
 using HrmApi.Models;
+using MongoDB.Bson;
 using MongoDB.Driver;
+using Microsoft.Extensions.Logging;
 
 namespace HrmApi.Services;
 
-public sealed class AttendanceService(MongoDbContext db, IConfiguration configuration)
+public sealed class AttendanceService(MongoDbContext db, IConfiguration configuration, ILogger<AttendanceService> logger)
 {
-    private readonly TimeZoneInfo _businessTimezone = GetBusinessTimezone(configuration);
+    private readonly TimeZoneInfo _businessTimezone = GetBusinessTimezone(configuration, logger);
 
-    private static TimeZoneInfo GetBusinessTimezone(IConfiguration configuration)
+    private static TimeZoneInfo GetBusinessTimezone(IConfiguration configuration, ILogger? logger = null)
     {
         var timezoneId = configuration["Attendance:BusinessTimezone"] ?? "Asia/Dhaka";
         try
@@ -17,7 +19,7 @@ public sealed class AttendanceService(MongoDbContext db, IConfiguration configur
         }
         catch
         {
-            // Fallback to UTC if timezone not found
+            logger?.LogWarning("Invalid timezone '{TimezoneId}' in configuration, falling back to UTC", timezoneId);
             return TimeZoneInfo.Utc;
         }
     }
@@ -264,31 +266,54 @@ public sealed class AttendanceService(MongoDbContext db, IConfiguration configur
     {
         var settings = await GetSettingsAsync(cancellationToken);
 
-        // Get all active users
+        var isWorkingDay = settings.WorkingDays.Contains(date.DayOfWeek);
+        var isHoliday = settings.Holidays.Any(h => h.Date == date || (h.IsRecurring && h.Date.Month == date.Month && h.Date.Day == date.Day));
+
+        // Use a simpler approach: get users and attendance records separately
+        // This avoids the DateOnly vs string comparison issue in aggregation
         var users = await db.Users
             .Find(u => u.Status == UserStatus.Active)
             .ToListAsync(cancellationToken);
 
-        // Get attendance records for the date
+        var startOfDayUtc = GetBusinessDateStartUtc(date);
+        var endOfDayUtc = GetBusinessDateEndUtc(date);
+
+        // Get attendance records for this date
         var records = await db.Attendance
             .Find(a => a.AttendanceDate == date)
             .ToListAsync(cancellationToken);
 
         var recordDict = records.ToDictionary(r => r.UserId, r => r);
 
-        var isWorkingDay = settings.WorkingDays.Contains(date.DayOfWeek);
-        var isHoliday = settings.Holidays.Any(h => h.Date == date || (h.IsRecurring && h.Date.Month == date.Month && h.Date.Day == date.Day));
-
         var responseRecords = new List<AdminDailyAttendanceResponse>();
         int presentCount = 0, lateCount = 0, absentCount = 0, onLeaveCount = 0, noRecordCount = 0;
 
         foreach (var user in users)
         {
-            var hasRecord = recordDict.TryGetValue(user.Id, out var record);
-
             AttendanceStatus status;
-            if (!hasRecord)
+            DateTimeOffset? checkInAtUtc = null;
+            DateTimeOffset? checkOutAtUtc = null;
+            int workingDurationMinutes = 0;
+            int lateMinutes = 0;
+            bool hasRecord = false;
+
+            if (recordDict.TryGetValue(user.Id, out var record))
             {
+                hasRecord = true;
+                status = record.Status;
+                checkInAtUtc = record.CheckInAtUtc;
+                checkOutAtUtc = record.CheckOutAtUtc;
+                workingDurationMinutes = record.WorkingDurationMinutes;
+                lateMinutes = record.LateMinutes;
+
+                if (status == AttendanceStatus.Present) presentCount++;
+                else if (status == AttendanceStatus.Late) lateCount++;
+                else if (status == AttendanceStatus.Absent) absentCount++;
+                else if (status == AttendanceStatus.OnLeave) onLeaveCount++;
+            }
+            else
+            {
+                hasRecord = false;
                 if (!isWorkingDay)
                 {
                     status = AttendanceStatus.Holiday;
@@ -304,14 +329,6 @@ public sealed class AttendanceService(MongoDbContext db, IConfiguration configur
                 }
                 noRecordCount++;
             }
-            else
-            {
-                status = record.Status;
-                if (status == AttendanceStatus.Present) presentCount++;
-                else if (status == AttendanceStatus.Late) lateCount++;
-                else if (status == AttendanceStatus.Absent) absentCount++;
-                else if (status == AttendanceStatus.OnLeave) onLeaveCount++;
-            }
 
             responseRecords.Add(new AdminDailyAttendanceResponse
             {
@@ -319,11 +336,11 @@ public sealed class AttendanceService(MongoDbContext db, IConfiguration configur
                 UserEmail = user.Email,
                 UserGoal = user.Goal,
                 AttendanceDate = date,
-                CheckInAtUtc = record?.CheckInAtUtc,
-                CheckOutAtUtc = record?.CheckOutAtUtc,
+                CheckInAtUtc = checkInAtUtc,
+                CheckOutAtUtc = checkOutAtUtc,
                 Status = status,
-                WorkingDurationMinutes = record?.WorkingDurationMinutes ?? 0,
-                LateMinutes = record?.LateMinutes ?? 0,
+                WorkingDurationMinutes = workingDurationMinutes,
+                LateMinutes = lateMinutes,
                 HasRecord = hasRecord
             });
         }
@@ -332,7 +349,7 @@ public sealed class AttendanceService(MongoDbContext db, IConfiguration configur
         {
             Date = date,
             Records = responseRecords,
-            TotalUsers = users.Count,
+            TotalUsers = responseRecords.Count,
             PresentCount = presentCount,
             LateCount = lateCount,
             AbsentCount = absentCount,

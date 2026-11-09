@@ -107,7 +107,7 @@ public static class AuthEndpoints
             return Results.Ok(new AuthResponse(accessToken, refreshToken, user.Email, auth.AccessTokenLifetime));
         }).WithName("Login");
 
-        // Refresh token
+        // Refresh token - atomic rotation to prevent concurrent refresh issuing multiple valid tokens
         authGroup.MapPost("/refresh", async (
             RefreshRequest request,
             MongoDbContext db,
@@ -116,21 +116,22 @@ public static class AuthEndpoints
             IPasswordHasher<User> hasher,
             CancellationToken cancellationToken) =>
         {
-            var storedToken = await db.RefreshTokens
-                .Find(rt => rt.Token == request.RefreshToken)
-                .FirstOrDefaultAsync(cancellationToken);
+            // Atomically find and revoke the token in one operation
+            var filter = Builders<RefreshToken>.Filter.And(
+                Builders<RefreshToken>.Filter.Eq(rt => rt.Token, request.RefreshToken),
+                Builders<RefreshToken>.Filter.Eq(rt => rt.RevokedAt, null));
+            var update = Builders<RefreshToken>.Update
+                .Set(rt => rt.RevokedAt, DateTimeOffset.UtcNow)
+                .Set(rt => rt.ReplacedByToken, auth.GenerateRefreshToken());
+            var options = new FindOneAndUpdateOptions<RefreshToken> { ReturnDocument = ReturnDocument.After };
+            var storedToken = await db.RefreshTokens.FindOneAndUpdateAsync(filter, update, options, cancellationToken);
 
-            if (storedToken == null || !storedToken.IsActive)
+            if (storedToken == null)
                 return Results.Unauthorized();
 
             var user = await db.Users.Find(u => u.Id == storedToken.UserId).FirstOrDefaultAsync(cancellationToken);
             if (user == null || user.Status != UserStatus.Active)
                 return Results.Unauthorized();
-
-            // Revoke old refresh token (rotation)
-            storedToken.RevokedAt = DateTimeOffset.UtcNow;
-            storedToken.ReplacedByToken = auth.GenerateRefreshToken();
-            await db.RefreshTokens.ReplaceOneAsync(rt => rt.Id == storedToken.Id, storedToken, cancellationToken: cancellationToken);
 
             // Create new tokens
             var permissions = await permService.GetUserPermissionsAsync(user.Id, cancellationToken);
@@ -235,22 +236,23 @@ public static class AuthEndpoints
             var frontendUrl = configuration["App:FrontendUrl"] ?? "http://localhost:3000";
             var resetLink = $"{frontendUrl.TrimEnd('/')}/reset-password?token={plainToken}&email={Uri.EscapeDataString(email)}";
 
-            // Log the incoming password reset request with OTP/token (for debugging)
-            logger.LogWarning("[FORGOT PASSWORD] Password reset requested for {Email} (UserId: {UserId}). OTP/Token: {Token}. Reset Link: {ResetLink}",
-                email, user.Id, plainToken, resetLink);
+            // Log the incoming password reset request (token hash prefix only, never plain token)
+            var tokenHashPrefix = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(plainToken))).Substring(0, 8);
+            logger.LogWarning("[FORGOT PASSWORD] Password reset requested for {Email} (UserId: {UserId}). TokenHashPrefix: {TokenHashPrefix}. Reset Link: {ResetLink}",
+                email, user.Id, tokenHashPrefix, resetLink);
 
             // Send email
             var emailResult = await emailService.SendPasswordResetEmailAsync(email, resetLink, email, cancellationToken);
 
             if (!emailResult.Success)
             {
-                logger.LogError("[FORGOT PASSWORD] Email delivery FAILED for {Email}: {Error}. Token was: {Token}",
-                    email, emailResult.ErrorMessage, plainToken);
+                logger.LogError("[FORGOT PASSWORD] Email delivery FAILED for {Email}: {Error}. TokenHashPrefix: {TokenHashPrefix}",
+                    email, emailResult.ErrorMessage, tokenHashPrefix);
             }
             else
             {
-                logger.LogInformation("[FORGOT PASSWORD] Email sent SUCCESSFULLY to {Email}. Token: {Token}",
-                    email, plainToken);
+                logger.LogInformation("[FORGOT PASSWORD] Email sent SUCCESSFULLY to {Email}. TokenHashPrefix: {TokenHashPrefix}",
+                    email, tokenHashPrefix);
             }
 
             return Results.Ok(new { message = "If the email exists, a reset link has been sent" });
@@ -278,17 +280,18 @@ public static class AuthEndpoints
             if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < 8)
                 return Results.BadRequest("New password must be at least 8 characters.");
 
-            // Log incoming password change request with OTP
-            logger.LogWarning("[RESET PASSWORD] Password change attempt for {Email}. OTP/Token: {Token}",
-                email, plainToken);
+            // Log incoming password change request with OTP (token hash prefix only)
+            var tokenHashPrefix = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(plainToken))).Substring(0, 8);
+            logger.LogWarning("[RESET PASSWORD] Password change attempt for {Email}. TokenHashPrefix: {TokenHashPrefix}",
+                email, tokenHashPrefix);
 
             // Validate token
             var user = await tokenService.ValidateTokenAsync(email, plainToken, cancellationToken);
 
             if (user == null)
             {
-                logger.LogWarning("[RESET PASSWORD] Invalid/expired token for {Email}. Token: {Token}",
-                    email, plainToken);
+                logger.LogWarning("[RESET PASSWORD] Invalid/expired token for {Email}. TokenHashPrefix: {TokenHashPrefix}",
+                    email, tokenHashPrefix);
                 return Results.BadRequest("Invalid or expired reset token.");
             }
 
@@ -296,8 +299,8 @@ public static class AuthEndpoints
             var consumed = await tokenService.ConsumeTokenAsync(plainToken, cancellationToken);
             if (!consumed)
             {
-                logger.LogWarning("[RESET PASSWORD] Token already consumed for {Email}. Token: {Token}",
-                    email, plainToken);
+                logger.LogWarning("[RESET PASSWORD] Token already consumed for {Email}. TokenHashPrefix: {TokenHashPrefix}",
+                    email, tokenHashPrefix);
                 return Results.BadRequest("Invalid or expired reset token.");
             }
 

@@ -321,35 +321,7 @@ public sealed class TaskService
             throw new KeyNotFoundException("Task not found.");
         }
 
-        // Employee can only advance forward: Unopened -> Ongoing -> Completed -> Due (if overdue)
-        // Cannot go back to Unopened
-        var isOverdue = task.DueDate.HasValue
-            && task.DueDate.Value < DateOnly.FromDateTime(DateTime.UtcNow)
-            && task.Status != TaskState.Completed;
-
-        task.Status = task.Status switch
-        {
-            TaskState.Unopened => TaskState.Ongoing,
-            TaskState.Ongoing => TaskState.Completed,
-            TaskState.Completed => isOverdue ? TaskState.Due : TaskState.Completed, // Go to Due if deadline missed, else stay Completed
-            TaskState.Due => TaskState.Ongoing, // Due -> Ongoing (resume work)
-            _ => TaskState.Unopened
-        };
-
-        if (task.Status == TaskState.Completed)
-        {
-            task.CompletedAtUtc = DateTimeOffset.UtcNow;
-        }
-        else
-        {
-            task.CompletedAtUtc = null;
-        }
-
-        task.UpdatedAtUtc = DateTimeOffset.UtcNow;
-
-        await _db.Tasks.ReplaceOneAsync(t => t.Id == taskId, task, cancellationToken: cancellationToken);
-
-        return MapToResponse(task);
+        return await AdvanceTaskStatusCoreAsync(task, taskId, canCycleBack: false, cancellationToken);
     }
 
     // Project Manager: Advance status on assigned task (can cycle, but Completed -> Due if overdue)
@@ -364,7 +336,12 @@ public sealed class TaskService
             throw new KeyNotFoundException("Task not found or not authorized.");
         }
 
-        // PM can cycle: Unopened -> Ongoing -> Completed -> (Due if overdue, else Unopened)
+        return await AdvanceTaskStatusCoreAsync(task, taskId, canCycleBack: true, cancellationToken);
+    }
+
+    // Shared core logic for advancing task status
+    private async Task<TaskResponse> AdvanceTaskStatusCoreAsync(TaskItem task, Guid taskId, bool canCycleBack, CancellationToken cancellationToken = default)
+    {
         var isOverdue = task.DueDate.HasValue
             && task.DueDate.Value < DateOnly.FromDateTime(DateTime.UtcNow)
             && task.Status != TaskState.Completed;
@@ -373,8 +350,8 @@ public sealed class TaskService
         {
             TaskState.Unopened => TaskState.Ongoing,
             TaskState.Ongoing => TaskState.Completed,
-            TaskState.Completed => isOverdue ? TaskState.Due : TaskState.Unopened,
-            TaskState.Due => TaskState.Unopened,
+            TaskState.Completed => isOverdue ? TaskState.Due : (canCycleBack ? TaskState.Unopened : TaskState.Completed),
+            TaskState.Due => canCycleBack ? TaskState.Unopened : TaskState.Ongoing,
             _ => TaskState.Unopened
         };
 

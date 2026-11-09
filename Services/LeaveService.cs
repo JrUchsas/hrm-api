@@ -13,11 +13,15 @@ public sealed class LeaveService(MongoDbContext db)
     /// Gets or creates a leave balance for the user for the specified year.
     /// If no balance exists, creates one with default quotas.
     /// </summary>
-    public async Task<LeaveBalance> GetOrCreateBalanceAsync(Guid userId, int year, CancellationToken cancellationToken = default)
+    public async Task<LeaveBalance> GetOrCreateBalanceAsync(Guid userId, int year, CancellationToken cancellationToken = default, IClientSessionHandle? session = null)
     {
-        var balance = await db.LeaveBalances
-            .Find(lb => lb.UserId == userId && lb.Year == year)
-            .FirstOrDefaultAsync(cancellationToken);
+        var filter = Builders<LeaveBalance>.Filter.And(
+            Builders<LeaveBalance>.Filter.Eq(lb => lb.UserId, userId),
+            Builders<LeaveBalance>.Filter.Eq(lb => lb.Year, year));
+
+        var balance = session != null
+            ? await db.LeaveBalances.Find(session, filter).FirstOrDefaultAsync(cancellationToken)
+            : await db.LeaveBalances.Find(filter).FirstOrDefaultAsync(cancellationToken);
 
         if (balance != null)
         {
@@ -37,7 +41,14 @@ public sealed class LeaveService(MongoDbContext db)
             UpdatedAtUtc = DateTimeOffset.UtcNow
         };
 
-        await db.LeaveBalances.InsertOneAsync(balance, cancellationToken: cancellationToken);
+        if (session != null)
+        {
+            await db.LeaveBalances.InsertOneAsync(session, balance, cancellationToken: cancellationToken);
+        }
+        else
+        {
+            await db.LeaveBalances.InsertOneAsync(balance, cancellationToken: cancellationToken);
+        }
         return balance;
     }
 
@@ -239,9 +250,9 @@ public sealed class LeaveService(MongoDbContext db)
             {
                 session.StartTransaction();
 
-                // Get balance for the year of the leave request
+                // Get balance for the year of the leave request (within transaction)
                 var year = request.StartDate.Year;
-                var balance = await GetOrCreateBalanceAsync(request.UserId, year, cancellationToken);
+                var balance = await GetOrCreateBalanceAsync(request.UserId, year, cancellationToken, session);
 
                 // Verify sufficient balance still exists
                 var remaining = balance.GetRemaining(request.LeaveType);

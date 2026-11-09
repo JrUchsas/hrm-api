@@ -99,6 +99,16 @@ public sealed class MongoDbContext
         var leaveRequestDateRangeIndex = Builders<LeaveRequest>.IndexKeys.Ascending(lr => lr.StartDate).Ascending(lr => lr.EndDate);
         await LeaveRequests.Indexes.CreateOneAsync(new CreateIndexModel<LeaveRequest>(leaveRequestDateRangeIndex));
 
+        // Partial unique index to prevent overlapping pending/approved leaves for the same user
+        // Only enforces uniqueness for documents with Status = Pending or Approved
+        var leaveRequestOverlapIndex = Builders<LeaveRequest>.IndexKeys
+            .Ascending(lr => lr.UserId)
+            .Ascending(lr => lr.StartDate)
+            .Ascending(lr => lr.EndDate);
+        var overlapFilter = Builders<LeaveRequest>.Filter.In(lr => lr.Status, new[] { LeaveStatus.Pending, LeaveStatus.Approved });
+        var overlapOptions = new CreateIndexOptions<LeaveRequest> { Unique = true, PartialFilterExpression = overlapFilter };
+        await LeaveRequests.Indexes.CreateOneAsync(new CreateIndexModel<LeaveRequest>(leaveRequestOverlapIndex, overlapOptions));
+
         // Task indexes
         var taskUserIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.UserId);
         await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskUserIndex));
@@ -116,5 +126,8 @@ public sealed class MongoDbContext
         await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskAssignedByIndex));
         var taskAssignedByStatusIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.AssignedByUserId).Ascending(t => t.Status);
         await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskAssignedByStatusIndex));
+        // Compound index for PM "due soon" queries
+        var taskAssignedByDueDateIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.AssignedByUserId).Ascending(t => t.DueDate);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskAssignedByDueDateIndex));
     }
 }

@@ -17,9 +17,12 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
 
-Env.Load(); // Load .env file
-
 var builder = WebApplication.CreateBuilder(args);
+
+if (builder.Environment.IsDevelopment())
+{
+    Env.Load(); // Load .env file only in development
+}
 
 // Bind to PORT env var (Render, Heroku, etc.) or default to 8080
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
@@ -122,8 +125,24 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
 });
 
 builder.Services.AddAuthorization();
+
+// CORS: Allow specific origins in production, any in development
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
-    policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+{
+    if (builder.Environment.IsDevelopment())
+    {
+        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+    }
+    else
+    {
+        var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+            ?? new[] { "http://localhost:3000" };
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    }
+}));
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 // Register Rate Limiting for auth protection
