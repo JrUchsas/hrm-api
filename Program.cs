@@ -66,6 +66,7 @@ builder.Services.AddScoped<PasswordResetTokenService>();
 builder.Services.AddScoped<AttendanceService>();
 builder.Services.AddScoped<LeaveService>();
 builder.Services.AddScoped<ReportsService>();
+builder.Services.AddScoped<TaskService>();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddHttpClient();
 
@@ -213,6 +214,9 @@ app.MapLeaveEndpoints();
 
 // Map Reports endpoints
 app.MapReportsEndpoints();
+
+// Map Task endpoints
+app.MapTaskEndpoints();
 
 app.Run();
 

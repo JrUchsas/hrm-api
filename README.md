@@ -42,7 +42,8 @@ d:\All Codes\Projects\
 │   │   ├── RefreshToken.cs               # Refresh token tracking & rotation state
 │   │   ├── PasswordResetToken.cs         # SHA-256 hashed password reset token model
 │   │   ├── Attendance.cs                 # Attendance, AttendanceSettings, Holiday, AttendanceStatus enum & all DTOs
-│   │   └── LeaveModels.cs                # LeaveType, LeaveStatus, LeaveBalance, LeaveRequest, DTOs
+│   │   ├── LeaveModels.cs                # LeaveType, LeaveStatus, LeaveBalance, LeaveRequest, DTOs
+│   │   └── TaskModels.cs                 # TaskState, TaskPriority, TaskItem, DTOs
 │   ├── Services\
 │   │   ├── AuthService.cs                # Access/refresh token creation & validation
 │   │   ├── AuthEndpoints.cs              # Authentication endpoint route definitions
@@ -57,9 +58,12 @@ d:\All Codes\Projects\
 │   │   ├── AttendanceService.cs          # Core attendance business logic (check-in/out, reports, settings)
 │   │   ├── AttendanceEndpoints.cs        # Attendance API endpoint route definitions
 │   │   ├── LeaveService.cs               # Leave balance, application, approval logic
-│   │   └── LeaveEndpoints.cs             # Leave Management API endpoint route definitions
+│   │   ├── LeaveEndpoints.cs             # Leave Management API endpoint route definitions
+│   │   └── TaskService.cs                # Task business logic (CRUD, filtering, status transitions)
 │   ├── Endpoints\
 │   │   ├── LeaveEndpoints.cs             # Leave Management API endpoint route definitions
+│   │   ├── ReportsEndpoints.cs           # Reports & Analytics API endpoint route definitions
+│   │   └── TaskEndpoints.cs              # Task Management API endpoint route definitions
 │   └── Health\
 │       └── HealthCheck.cs                # Diagnostics for MongoDB, collections, and JWT
 ```
@@ -358,6 +362,120 @@ These endpoints provide workforce analytics and operational reports for dashboar
 **Pagination Parameters** (used by paginated endpoints):
 - `page` (default: 1, min: 1)
 - `pageSize` (default: 20, min: 1, max: 100)
+
+---
+### 7. Task Management Endpoints (`/api/tasks`)
+
+These endpoints provide a personal task management system for employees to organize work, track deliverables, and hit milestones.
+
+All endpoints require authentication (`[Auth]`). Users can only access their own tasks.
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/tasks` | `[Auth]` | List user's tasks with filtering and pagination. Query params: `status` (1=Todo, 2=InProgress, 3=Done), `priority` (1=Low, 2=Medium, 3=High), `category`, `search` (text search in title/description/category), `page` (default 1), `pageSize` (default 20, max 100). |
+| `GET` | `/api/tasks/summary` | `[Auth]` | Get task summary counts for dashboard. Returns: `totalTasks`, `inProgressCount`, `completedCount`, `highPriorityCount`. |
+| `GET` | `/api/tasks/categories` | `[Auth]` | Get available categories (dynamic + defaults: Operations, Compliance, Security, Goals, Profile, Projects). |
+| `GET` | `/api/tasks/{id}` | `[Auth]` | Get a specific task by ID. |
+| `POST` | `/api/tasks` | `[Auth]` | Create a new task. Body: `title` (required, max 200 chars), `description` (optional, max 2000 chars), `priority` (1=Low, 2=Medium, 3=High, default 2), `category` (must be valid category, default "Operations"), `dueDate` (optional, `yyyy-MM-dd`). |
+| `PUT` | `/api/tasks/{id}` | `[Auth]` | Update a task (partial updates). Body: any combination of `title`, `description`, `status`, `priority`, `category`, `dueDate`. |
+| `DELETE` | `/api/tasks/{id}` | `[Auth]` | Delete a task. |
+| `POST` | `/api/tasks/{id}/toggle` | `[Auth]` | Quick toggle between `Todo` and `Done` status. |
+| `POST` | `/api/tasks/{id}/advance` | `[Auth]` | Advance status cycle: `Todo` → `InProgress` → `Done` → `Todo`. |
+
+**Task State Enum:**
+- `Todo = 1` → Display: "To do"
+- `InProgress = 2` → Display: "In progress"
+- `Done = 3` → Display: "Done"
+
+**Task Priority Enum:**
+- `Low = 1` → Display: "Low"
+- `Medium = 2` → Display: "Medium"
+- `High = 3` → Display: "High"
+
+**Valid Categories:** `Operations`, `Compliance`, `Security`, `Goals`, `Profile`, `Projects`
+
+**Response Fields:**
+All task responses include computed fields for UI:
+- `statusDisplay`: "To do" | "In progress" | "Done"
+- `priorityDisplay`: "Low" | "Medium" | "High"
+- `isOverdue`: `true` if `dueDate` < today and status != `Done`
+
+**Task Application Validation:**
+- `Title` is required (max 200 chars)
+- `Description` max 2000 chars
+- `Priority` must be valid enum value
+- `Category` must be from valid list
+- `DueDate` optional, format `yyyy-MM-dd`
+
+**Example: Task Management Flow**
+```javascript
+// Get task summary for dashboard
+const summary = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks/summary', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { totalTasks, inProgressCount, completedCount, highPriorityCount } = await summary.json();
+
+// List tasks with filters
+const tasks = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks?status=1&priority=3&category=Security&search=2FA', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+const { tasks: taskList, totalCount, page, pageSize, totalPages } = await tasks.json();
+
+// Create a new task
+const newTask = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks', {
+  method: 'POST',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`
+  },
+  body: JSON.stringify({ 
+    title: 'Setup 2FA',
+    description: 'Add mobile authenticator app for security compliance',
+    priority: 3, // High
+    category: 'Security',
+    dueDate: '2026-11-15'
+  })
+});
+const task = await newTask.json();
+
+// Advance task status (Todo → InProgress)
+const advanced = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.id}/advance`, {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+
+// Toggle task status (Todo ↔ Done)
+const toggled = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.id}/toggle`, {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+
+// Update task
+const updated = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.id}`, {
+  method: 'PUT',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`
+  },
+  body: JSON.stringify({ 
+    title: 'Updated task title',
+    status: 2, // InProgress
+    priority: 1 // Low
+  })
+});
+
+// Get available categories
+const categories = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks/categories', {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+);
+// Returns: ["Compliance", "Goals", "Operations", "Profile", "Projects", "Security"]
+
+// Delete task
+await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.id}`, {
+  method: 'DELETE',
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+});
+```
 
 ---
 

@@ -24,6 +24,7 @@ public sealed class MongoDbContext
     public IMongoCollection<AttendanceSettings> AttendanceSettings => _database.GetCollection<AttendanceSettings>("attendance_settings");
     public IMongoCollection<LeaveBalance> LeaveBalances => _database.GetCollection<LeaveBalance>("leave_balances");
     public IMongoCollection<LeaveRequest> LeaveRequests => _database.GetCollection<LeaveRequest>("leave_requests");
+    public IMongoCollection<TaskItem> Tasks => _database.GetCollection<TaskItem>("tasks");
 
     public async Task CreateIndexesAsync()
     {
@@ -97,5 +98,19 @@ public sealed class MongoDbContext
         await LeaveRequests.Indexes.CreateOneAsync(new CreateIndexModel<LeaveRequest>(leaveRequestUserStatusIndex));
         var leaveRequestDateRangeIndex = Builders<LeaveRequest>.IndexKeys.Ascending(lr => lr.StartDate).Ascending(lr => lr.EndDate);
         await LeaveRequests.Indexes.CreateOneAsync(new CreateIndexModel<LeaveRequest>(leaveRequestDateRangeIndex));
+
+        // Task indexes
+        var taskUserIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.UserId);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskUserIndex));
+        var taskUserStatusIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.UserId).Ascending(t => t.Status);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskUserStatusIndex));
+        var taskUserPriorityIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.UserId).Ascending(t => t.Priority);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskUserPriorityIndex));
+        var taskUserCategoryIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.UserId).Ascending(t => t.Category);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskUserCategoryIndex));
+        var taskUserCreatedIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.UserId).Descending(t => t.CreatedAtUtc);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskUserCreatedIndex));
+        var taskDueDateIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.DueDate);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskDueDateIndex));
     }
 }
