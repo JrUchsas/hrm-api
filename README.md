@@ -1049,6 +1049,48 @@ policy.WithOrigins("https://your-frontend-domain.com")
 
 ---
 
+## 🧪 Testing
+
+### Test Suite Overview
+The project includes a comprehensive integration test suite using **xUnit** + **Microsoft.AspNetCore.Mvc.Testing** with a **WebApplicationFactory** for in-memory API testing.
+
+**Test Project:** `Tests/Tests.csproj`
+
+### Running Tests
+```bash
+# Run all tests
+dotnet test Tests/Tests.csproj
+
+# Run specific test class
+dotnet test Tests/Tests.csproj --filter "TaskEndpointsTests"
+
+# Run specific test
+dotnet test Tests/Tests.csproj --filter "TaskEndpointsTests.Tasks_PmCanCreateAndAssignTaskToUser"
+```
+
+### Test Design Principles
+
+1. **Pre-seeded Test Users** — Tests use the same users seeded by `RbacSeedService` on startup:
+   - `admin@company.com` (super admin)
+   - `hrmanager@company.com` (promoted to project manager in tests)
+   - `user1@company.com`, `user2@company.com`, `user3@company.com` (regular employees)
+   
+   No redundant users are created during test runs — this keeps the test database clean and tests deterministic.
+
+2. **Database Isolation** — Each test clears the `Tasks` collection before running via `CleanupTasksAsync()`, ensuring no data leakage between tests.
+
+3. **No Parallel Execution** — Task tests use `[Collection("TaskEndpointsTests")]` with `DisableParallelization = true` to prevent race conditions on the shared test database.
+
+4. **Fresh JWT for Role Changes** — When a user's role is modified (e.g., assigning "project manager" to hrmanager), the test re-authenticates to get a fresh token with updated permissions.
+
+### Test Coverage
+- **TaskEndpointsTests** (11 tests): Covers employee task lifecycle, PM task assignment, status transitions, reassignment, summaries, and authorization boundaries.
+
+### Test Database
+Tests run against a local MongoDB instance (`mongodb://localhost:27017`) when `ASPNETCORE_ENVIRONMENT=Testing`. This is configured automatically by `WebApplicationFactory` in the test constructor — **never uses production data**.
+
+---
+
 ## 📝 License
 
 MIT License - feel free to use in your projects.

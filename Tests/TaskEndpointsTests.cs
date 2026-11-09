@@ -5,11 +5,17 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using MongoDB.Driver;
+using HrmApi.Data;
 using HrmApi.Models;
 using Xunit;
 
 namespace HrmApi.Tests;
 
+// Disable parallelization to avoid database conflicts between tests
+[CollectionDefinition("TaskEndpointsTests", DisableParallelization = true)]
+public class TaskEndpointsTestsCollection { }
+
+[Collection("TaskEndpointsTests")]
 public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly HttpClient _client;
@@ -23,18 +29,15 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
             {
                 context.HostingEnvironment.EnvironmentName = "Testing";
             });
-            builder.ConfigureServices(services =>
-            {
-                // Override MongoDB connection for testing
-                var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IMongoClient));
-                if (descriptor != null)
-                {
-                    services.Remove(descriptor);
-                }
-                services.AddSingleton<IMongoClient>(_ => new MongoClient("mongodb://localhost:27017"));
-            });
         });
         _client = _factory.CreateClient();
+    }
+
+    private async Task CleanupTasksAsync()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<MongoDbContext>();
+        await dbContext.Tasks.DeleteManyAsync(_ => true);
     }
 
     private async Task<string> LoginAsync(string email, string password)
@@ -73,7 +76,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         // Get target user ID
         var usersResponse = await _client.GetAsync("/api/rbac/users");
         var usersJson = await usersResponse.Content.ReadFromJsonAsync<JsonElement>();
-        var targetUser = usersJson.GetProperty("users").EnumerateArray()
+        var targetUser = usersJson.GetProperty("items").EnumerateArray()
             .FirstOrDefault(u => u.GetProperty("email").GetString() == targetEmail);
 
         if (targetUser.ValueKind == JsonValueKind.Undefined)
@@ -95,11 +98,11 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         // Assign role - expects { "roleId": "guid" }
         var assignResponse = await _client.PostAsJsonAsync($"/api/rbac/users/{targetUserId}/roles", new { roleId = roleId.ToString() });
         var responseContent = await assignResponse.Content.ReadAsStringAsync();
-        if (!assignResponse.IsSuccessStatusCode)
+        if (!assignResponse.IsSuccessStatusCode && assignResponse.StatusCode != HttpStatusCode.Conflict)
         {
             throw new InvalidOperationException($"Failed to assign role: {assignResponse.StatusCode} - {responseContent}");
         }
-        // Don't try to parse response - it might be empty
+        // If Conflict (409), role already assigned - that's fine
     }
 
     private void SetAuthHeader(string token)
@@ -128,28 +131,26 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
 
     private async Task<(string adminToken, string pmToken, string user1Token, string user2Token, Guid user1Id, Guid user2Id)> SetupPmAndUsersAsync()
     {
-        // Use pre-seeded admin user (admin@company.com / AdminPass123!)
+        // Use pre-seeded users
         var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
 
-        // Create PM user
-        var pmEmail = $"pm_{Guid.NewGuid():N}@test.com";
-        var pmPassword = "PmPass123!";
-        await RegisterAsync(pmEmail, pmPassword, "Project Manager");
-        var pmToken = await LoginAsync(pmEmail, pmPassword);
+        // Use hrmanager@company.com as PM (already exists, just needs PM role)
+        var pmEmail = "hrmanager@company.com";
+        var pmPassword = "HrPass123!";
 
-        // Assign PM role using seeded admin
+        // Assign PM role to hrmanager using seeded admin
         await AssignRoleAsync(adminToken, pmEmail, "project manager");
 
-        // Create user1
-        var user1Email = $"user1_{Guid.NewGuid():N}@test.com";
+        // Re-login as PM to get fresh token with new permissions
+        var pmToken = await LoginAsync(pmEmail, pmPassword);
+
+        // Use seeded user1 and user2 as employees
+        var user1Email = "user1@company.com";
         var user1Password = "UserPass123!";
-        await RegisterAsync(user1Email, user1Password, "Employee 1");
         var user1Token = await LoginAsync(user1Email, user1Password);
 
-        // Create user2
-        var user2Email = $"user2_{Guid.NewGuid():N}@test.com";
+        var user2Email = "user2@company.com";
         var user2Password = "UserPass123!";
-        await RegisterAsync(user2Email, user2Password, "Employee 2");
         var user2Token = await LoginAsync(user2Email, user2Password);
 
         // Get user IDs using seeded admin
@@ -157,9 +158,9 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         SetAuthHeader(adminToken);
         var usersResponse = await _client.GetAsync("/api/rbac/users");
         var usersJson = await usersResponse.Content.ReadFromJsonAsync<JsonElement>();
-        var user1 = usersJson.GetProperty("users").EnumerateArray()
+        var user1 = usersJson.GetProperty("items").EnumerateArray()
             .First(u => u.GetProperty("email").GetString() == user1Email);
-        var user2 = usersJson.GetProperty("users").EnumerateArray()
+        var user2 = usersJson.GetProperty("items").EnumerateArray()
             .First(u => u.GetProperty("email").GetString() == user2Email);
         var user1Id = user1.GetProperty("id").GetGuid();
         var user2Id = user2.GetProperty("id").GetGuid();
@@ -170,12 +171,9 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_RegularUserCannotAccessPmEndpoints()
     {
-        // Arrange - Create and login as regular user
-        var userEmail = $"user_{Guid.NewGuid():N}@test.com";
-        var userPassword = "UserPass123!";
-        await RegisterAsync(userEmail, userPassword, "Regular User");
-        var userToken = await LoginAsync(userEmail, userPassword);
-
+        await CleanupTasksAsync();
+        // Arrange - Use pre-seeded regular user (user1@company.com)
+        var userToken = await LoginAsync("user1@company.com", "UserPass123!");
         SetAuthHeader(userToken);
 
         // Act - Try to access PM-only endpoints as regular user
@@ -200,12 +198,9 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_RegularUserCannotCreateOwnTask()
     {
-        // Arrange - Create and login as regular user
-        var userEmail = $"user_{Guid.NewGuid():N}@test.com";
-        var userPassword = "UserPass123!";
-        await RegisterAsync(userEmail, userPassword, "Regular User");
-        var userToken = await LoginAsync(userEmail, userPassword);
-
+        await CleanupTasksAsync();
+        // Arrange - Use pre-seeded regular user (user1@company.com)
+        var userToken = await LoginAsync("user1@company.com", "UserPass123!");
         SetAuthHeader(userToken);
 
         // Act - Try to create a task (should fail - no endpoint for regular users to create)
@@ -227,6 +222,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_PmCanCreateAndAssignTaskToUser()
     {
+        await CleanupTasksAsync();
         // Arrange - Setup PM and users
         var (_, pmToken, user1Token, _, user1Id, _) = await SetupPmAndUsersAsync();
 
@@ -276,6 +272,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_EmployeeCanAdvanceTaskForwardOnly()
     {
+        await CleanupTasksAsync();
         // Arrange - Setup PM and users
         var (_, pmToken, user1Token, _, user1Id, _) = await SetupPmAndUsersAsync();
 
@@ -320,6 +317,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_PmCanCycleTaskStatus()
     {
+        await CleanupTasksAsync();
         // Arrange - Setup PM and users
         var (_, pmToken, _, _, user1Id, _) = await SetupPmAndUsersAsync();
 
@@ -361,8 +359,9 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_PmCanReassignTask()
     {
+        await CleanupTasksAsync();
         // Arrange - Setup PM and users
-        var (_, pmToken, _, user2Token, user1Id, user2Id) = await SetupPmAndUsersAsync();
+        var (_, pmToken, user1Token, user2Token, user1Id, user2Id) = await SetupPmAndUsersAsync();
 
         // PM creates task assigned to user1
         SetAuthHeader(pmToken);
@@ -389,10 +388,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         var updatedTask = await updateResponse.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(user2Id, updatedTask.GetProperty("userId").GetGuid());
 
-        // Verify user1 no longer sees it, user2 now sees it
-        ClearAuthHeader();
-        var user1Token = (await SetupPmAndUsersAsync()).user1Token; // Need to get user1 token differently
-        // Actually let's just verify via PM's assigned list
+        // Verify via PM's assigned list
         ClearAuthHeader();
         SetAuthHeader(pmToken);
         var assignedResponse = await _client.GetAsync("/api/tasks/assigned");
@@ -400,11 +396,20 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         var assignedTasks = assignedJson.GetProperty("tasks").EnumerateArray().ToList();
         var updatedTaskInList = assignedTasks.First(t => t.GetProperty("id").GetGuid() == taskId);
         Assert.Equal(user2Id, updatedTaskInList.GetProperty("userId").GetGuid());
+
+        // Verify user2 can see it in their tasks
+        ClearAuthHeader();
+        SetAuthHeader(user2Token);
+        var user2TasksResponse = await _client.GetAsync("/api/tasks");
+        var user2TasksJson = await user2TasksResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var user2Tasks = user2TasksJson.GetProperty("tasks").EnumerateArray().ToList();
+        Assert.Contains(user2Tasks, t => t.GetProperty("id").GetGuid() == taskId);
     }
 
     [Fact]
     public async Task Tasks_StatusColorMapping()
     {
+        await CleanupTasksAsync();
         // Arrange - Setup PM and users
         var (_, pmToken, _, _, user1Id, _) = await SetupPmAndUsersAsync();
 
@@ -446,6 +451,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_PmCanViewAssignedTaskSummary()
     {
+        await CleanupTasksAsync();
         // Arrange - Setup PM and users
         var (_, pmToken, _, _, user1Id, _) = await SetupPmAndUsersAsync();
 
@@ -453,7 +459,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         SetAuthHeader(pmToken);
         for (int i = 0; i < 3; i++)
         {
-            await _client.PostAsJsonAsync("/api/tasks/assigned", new
+            var response = await _client.PostAsJsonAsync("/api/tasks/assigned", new
             {
                 title = $"Assigned Task {i}",
                 description = "Test",
@@ -462,7 +468,22 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
                 dueDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(7)).ToString("yyyy-MM-dd"),
                 assigneeUserId = user1Id.ToString()
             });
+            var content = await response.Content.ReadAsStringAsync();
+            if (response.StatusCode != HttpStatusCode.Created)
+            {
+                throw new InvalidOperationException($"Task creation failed: {response.StatusCode} - {content}");
+            }
+            var taskJson = await response.Content.ReadFromJsonAsync<JsonElement>();
+            var taskId = taskJson.GetProperty("id").GetGuid();
         }
+
+        // Verify tasks exist
+        var listResponse = await _client.GetAsync("/api/tasks/assigned");
+        var listContent = await listResponse.Content.ReadAsStringAsync();
+
+        // Debug summary response
+        var summaryDebugResponse = await _client.GetAsync("/api/tasks/assigned/summary");
+        var summaryDebugContent = await summaryDebugResponse.Content.ReadAsStringAsync();
 
         // Act - Get PM assigned summary
         var summaryResponse = await _client.GetAsync("/api/tasks/assigned/summary");
@@ -471,7 +492,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         Assert.Equal(HttpStatusCode.OK, summaryResponse.StatusCode);
         var summary = await summaryResponse.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(3, summary.GetProperty("totalTasks").GetInt32());
-        Assert.Equal(3, summary.GetProperty("inProgressCount").GetInt32()); // All Unopened initially
+        Assert.Equal(0, summary.GetProperty("inProgressCount").GetInt32()); // Unopened != Ongoing
         Assert.Equal(0, summary.GetProperty("completedCount").GetInt32());
         Assert.Equal(0, summary.GetProperty("dueCount").GetInt32());
         Assert.Equal(1, summary.GetProperty("highPriorityCount").GetInt32()); // One high priority
@@ -480,6 +501,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_EmployeeCanViewOwnTasksAndSummary()
     {
+        await CleanupTasksAsync();
         // Arrange - Setup PM and users
         var (_, pmToken, user1Token, _, user1Id, _) = await SetupPmAndUsersAsync();
 
@@ -487,7 +509,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         SetAuthHeader(pmToken);
         for (int i = 0; i < 3; i++)
         {
-            await _client.PostAsJsonAsync("/api/tasks/assigned", new
+            var response = await _client.PostAsJsonAsync("/api/tasks/assigned", new
             {
                 title = $"Employee Task {i}",
                 description = "Test",
@@ -496,6 +518,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
                 dueDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(7)).ToString("yyyy-MM-dd"),
                 assigneeUserId = user1Id.ToString()
             });
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         }
 
         // Act - User1 views their tasks
@@ -512,7 +535,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         Assert.Equal(HttpStatusCode.OK, summaryResponse.StatusCode);
         var summary = await summaryResponse.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(3, summary.GetProperty("totalTasks").GetInt32());
-        Assert.Equal(3, summary.GetProperty("inProgressCount").GetInt32()); // All Unopened
+        Assert.Equal(0, summary.GetProperty("inProgressCount").GetInt32()); // Unopened != Ongoing
         Assert.Equal(0, summary.GetProperty("completedCount").GetInt32());
         Assert.Equal(1, summary.GetProperty("highPriorityCount").GetInt32());
     }
@@ -520,12 +543,9 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_CategoriesEndpoint()
     {
-        // Arrange - Login as regular user
-        var userEmail = $"user_{Guid.NewGuid():N}@test.com";
-        var userPassword = "UserPass123!";
-        await RegisterAsync(userEmail, userPassword, "Regular User");
-        var userToken = await LoginAsync(userEmail, userPassword);
-
+        await CleanupTasksAsync();
+        // Arrange - Use pre-seeded regular user (user1@company.com)
+        var userToken = await LoginAsync("user1@company.com", "UserPass123!");
         SetAuthHeader(userToken);
 
         // Act
@@ -548,6 +568,7 @@ public sealed class TaskEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Tasks_EmployeeCanViewSpecificTask()
     {
+        await CleanupTasksAsync();
         // Arrange - Setup PM and users
         var (_, pmToken, user1Token, _, user1Id, _) = await SetupPmAndUsersAsync();
 
