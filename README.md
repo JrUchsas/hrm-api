@@ -78,7 +78,7 @@ d:\All Codes\Projects\
 - `PasswordHash` (`string`, PBKDF2 hashed)
 - `Goal` (`string?`, optional profile bio/goal)
 - `Status` (`UserStatus` enum: `Active = 1`, `Suspended = 2`, `Deleted = 3`)
-- `EmailVerified` (`bool`)
+- `EmailVerified` (`bool`, defaults to `true` for new registrations)
 - `LastLoginAt` (`DateTimeOffset?`)
 - `CreatedAt` (`DateTimeOffset`)
 - `UpdatedAt` (`DateTimeOffset`)

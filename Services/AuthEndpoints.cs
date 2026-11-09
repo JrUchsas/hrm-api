@@ -34,7 +34,7 @@ public static class AuthEndpoints
             if (request.Password.Length < 8) return Results.BadRequest("Password must be at least 8 characters.");
             if (await db.Users.Find(u => u.Email == email).AnyAsync(cancellationToken)) return Results.Conflict("Email is already in use.");
 
-            var user = new User { Email = email, PasswordHash = "pending", Goal = request.Goal?.Trim() };
+            var user = new User { Email = email, PasswordHash = "pending", Goal = request.Goal?.Trim(), EmailVerified = true };
             user.PasswordHash = hasher.HashPassword(user, request.Password);
             await db.Users.InsertOneAsync(user, cancellationToken: cancellationToken);
 
