@@ -40,6 +40,14 @@ public sealed class RbacSeedService(MongoDbContext db, IPasswordHasher<User> pas
             new() { Resource = "profile", Action = "read", Description = "Read own profile" },
             new() { Resource = "profile", Action = "update", Description = "Update own profile" },
 
+            // Task management
+            new() { Resource = "tasks", Action = "create", Description = "Create own tasks" },
+            new() { Resource = "tasks", Action = "read", Description = "Read own tasks" },
+            new() { Resource = "tasks", Action = "update", Description = "Update own tasks" },
+            new() { Resource = "tasks", Action = "delete", Description = "Delete own tasks" },
+            new() { Resource = "tasks", Action = "assign", Description = "Assign tasks to other users (Project Manager)" },
+            new() { Resource = "tasks", Action = "view_assigned", Description = "View tasks assigned to others (Project Manager)" },
+
             // Admin/System
             new() { Resource = "system", Action = "health", Description = "Access health endpoints" },
             new() { Resource = "system", Action = "config", Description = "Access configuration endpoints" },
@@ -65,6 +73,7 @@ public sealed class RbacSeedService(MongoDbContext db, IPasswordHasher<User> pas
         {
             new() { Name = "super admin", Description = "Full system access - can manage users, roles, and permissions" },
             new() { Name = "hr manager", Description = "Manage users and view reports" },
+            new() { Name = "project manager", Description = "Create and assign tasks to team members, track project progress" },
             new() { Name = "user", Description = "Basic user with access to own data only" },
         };
 
@@ -98,6 +107,19 @@ public sealed class RbacSeedService(MongoDbContext db, IPasswordHasher<User> pas
                 "users.update",
                 "roles.read",
                 "permissions.read",
+                "profile.read",
+                "profile.update",
+                "system.health",
+            },
+            ["project manager"] = new()
+            {
+                "users.read",
+                "tasks.create",
+                "tasks.read",
+                "tasks.update",
+                "tasks.delete",
+                "tasks.assign",
+                "tasks.view_assigned",
                 "profile.read",
                 "profile.update",
                 "system.health",

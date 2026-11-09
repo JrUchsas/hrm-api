@@ -5,9 +5,10 @@ namespace HrmApi.Models;
 
 public enum TaskState
 {
-    Todo = 1,
-    InProgress = 2,
-    Done = 3
+    Unopened = 1,
+    Ongoing = 2,
+    Completed = 3,
+    Due = 4
 }
 
 public enum TaskPriority
@@ -34,7 +35,7 @@ public sealed class TaskItem
     public string Description { get; set; } = string.Empty;
 
     [BsonElement("status")]
-    public TaskState Status { get; set; } = TaskState.Todo;
+    public TaskState Status { get; set; } = TaskState.Unopened;
 
     [BsonElement("priority")]
     public TaskPriority Priority { get; set; } = TaskPriority.Medium;
@@ -56,6 +57,14 @@ public sealed class TaskItem
 
     [BsonElement("assigneeEmail")]
     public string? AssigneeEmail { get; set; }
+
+    // Project Manager fields
+    [BsonElement("assignedByUserId")]
+    [BsonRepresentation(BsonType.String)]
+    public Guid? AssignedByUserId { get; set; }
+
+    [BsonElement("assignedAtUtc")]
+    public DateTimeOffset? AssignedAtUtc { get; set; }
 }
 
 // DTOs for API requests/responses
@@ -66,6 +75,8 @@ public sealed class CreateTaskRequest
     public TaskPriority Priority { get; set; } = TaskPriority.Medium;
     public string Category { get; set; } = "Operations";
     public DateOnly? DueDate { get; set; }
+    // For project managers: assign task to another user
+    public Guid? AssigneeUserId { get; set; }
 }
 
 public sealed class UpdateTaskRequest
@@ -76,6 +87,8 @@ public sealed class UpdateTaskRequest
     public TaskPriority? Priority { get; set; }
     public string? Category { get; set; }
     public DateOnly? DueDate { get; set; }
+    // For project managers: reassign task
+    public Guid? AssigneeUserId { get; set; }
 }
 
 public sealed class TaskResponse
@@ -93,13 +106,29 @@ public sealed class TaskResponse
     public DateTimeOffset? CompletedAtUtc { get; set; }
     public string? AssigneeEmail { get; set; }
 
+    // Project Manager fields
+    public Guid? AssignedByUserId { get; set; }
+    public DateTimeOffset? AssignedAtUtc { get; set; }
+    public string? AssignedByEmail { get; set; }
+
     // Display-friendly status for UI
     public string StatusDisplay => Status switch
     {
-        TaskState.Todo => "To do",
-        TaskState.InProgress => "In progress",
-        TaskState.Done => "Done",
+        TaskState.Unopened => "Unopened",
+        TaskState.Ongoing => "Ongoing",
+        TaskState.Completed => "Completed",
+        TaskState.Due => "Due",
         _ => Status.ToString()
+    };
+
+    // UI color mapping for status
+    public string StatusColor => Status switch
+    {
+        TaskState.Unopened => "cyan",
+        TaskState.Ongoing => "yellow",
+        TaskState.Completed => "green",
+        TaskState.Due => "red",
+        _ => "gray"
     };
 
     // Display-friendly priority for UI
@@ -111,7 +140,7 @@ public sealed class TaskResponse
         _ => Priority.ToString()
     };
 
-    public bool IsOverdue => DueDate.HasValue && DueDate.Value < DateOnly.FromDateTime(DateTime.UtcNow) && Status != TaskState.Done;
+    public bool IsOverdue => DueDate.HasValue && DueDate.Value < DateOnly.FromDateTime(DateTime.UtcNow) && Status != TaskState.Completed;
 }
 
 public sealed class TaskListResponse
@@ -129,4 +158,5 @@ public sealed class TaskSummaryResponse
     public int InProgressCount { get; set; }
     public int CompletedCount { get; set; }
     public int HighPriorityCount { get; set; }
+    public int DueCount { get; set; }
 }

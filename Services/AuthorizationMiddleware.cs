@@ -12,6 +12,7 @@ public static class AuthorizationMiddleware
         services.AddAuthorizationBuilder()
             .AddPolicy("super admin", policy => policy.RequireRole("super admin"))
             .AddPolicy("hr manager", policy => policy.RequireRole("hr manager"))
+            .AddPolicy("project manager", policy => policy.RequireRole("project manager"))
             .AddPolicy("user", policy => policy.RequireRole("user"));
 
         return services;

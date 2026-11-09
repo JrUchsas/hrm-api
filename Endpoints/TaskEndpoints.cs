@@ -15,6 +15,8 @@ public static class TaskEndpoints
             .WithTags("Task Management")
             .RequireAuthorization(); // All task endpoints require authentication
 
+        // ============ USER ENDPOINTS (own tasks) ============
+
         // GET /api/tasks - Get user's tasks with filtering and pagination
         tasksGroup.MapGet("", async (
             ClaimsPrincipal user,
@@ -73,7 +75,7 @@ public static class TaskEndpoints
         .WithName("GetTaskById")
         .Produces<TaskResponse>();
 
-        // POST /api/tasks - Create a new task
+        // POST /api/tasks - Create a new task (own task)
         tasksGroup.MapPost("", async (
             CreateTaskRequest request,
             ClaimsPrincipal user,
@@ -96,7 +98,7 @@ public static class TaskEndpoints
         .WithName("CreateTask")
         .Produces<TaskResponse>();
 
-        // PUT /api/tasks/{id} - Update a task
+        // PUT /api/tasks/{id} - Update own task
         tasksGroup.MapPut("/{id:guid}", async (
             Guid id,
             UpdateTaskRequest request,
@@ -123,7 +125,7 @@ public static class TaskEndpoints
         .WithName("UpdateTask")
         .Produces<TaskResponse>();
 
-        // DELETE /api/tasks/{id} - Delete a task
+        // DELETE /api/tasks/{id} - Delete own task
         tasksGroup.MapDelete("/{id:guid}", async (
             Guid id,
             ClaimsPrincipal user,
@@ -137,29 +139,7 @@ public static class TaskEndpoints
         })
         .WithName("DeleteTask");
 
-        // POST /api/tasks/{id}/toggle - Toggle task status (Todo <-> Done)
-        tasksGroup.MapPost("/{id:guid}/toggle", async (
-            Guid id,
-            ClaimsPrincipal user,
-            TaskService taskService,
-            CancellationToken cancellationToken = default) =>
-        {
-            var userId = GetUserId(user);
-
-            try
-            {
-                var task = await taskService.ToggleTaskStatusAsync(id, userId, cancellationToken);
-                return Results.Ok(task);
-            }
-            catch (KeyNotFoundException)
-            {
-                return Results.NotFound("Task not found.");
-            }
-        })
-        .WithName("ToggleTaskStatus")
-        .Produces<TaskResponse>();
-
-        // POST /api/tasks/{id}/advance - Advance task status (Todo -> InProgress -> Done -> Todo)
+        // POST /api/tasks/{id}/advance - Advance task status (Unopened -> Ongoing -> Completed -> Unopened)
         tasksGroup.MapPost("/{id:guid}/advance", async (
             Guid id,
             ClaimsPrincipal user,
@@ -179,6 +159,133 @@ public static class TaskEndpoints
             }
         })
         .WithName("AdvanceTaskStatus")
+        .Produces<TaskResponse>();
+
+        // ============ PROJECT MANAGER ENDPOINTS (assigned tasks) ============
+
+        // GET /api/tasks/assigned - Get tasks assigned by project manager
+        tasksGroup.MapGet("/assigned", async (
+            ClaimsPrincipal user,
+            TaskService taskService,
+            TaskState? status = null,
+            TaskPriority? priority = null,
+            string? category = null,
+            string? search = null,
+            int page = 1,
+            int pageSize = 20,
+            CancellationToken cancellationToken = default) =>
+        {
+            var userId = GetUserId(user);
+            var result = await taskService.GetAssignedTasksAsync(userId, status, priority, category, search, page, pageSize, cancellationToken);
+            return Results.Ok(result);
+        })
+        .RequireAuthorization("Permission:tasks.view_assigned")
+        .WithName("GetAssignedTasks")
+        .Produces<TaskListResponse>();
+
+        // GET /api/tasks/assigned/summary - Get summary of assigned tasks
+        tasksGroup.MapGet("/assigned/summary", async (
+            ClaimsPrincipal user,
+            TaskService taskService,
+            CancellationToken cancellationToken = default) =>
+        {
+            var userId = GetUserId(user);
+            var summary = await taskService.GetAssignedTaskSummaryAsync(userId, cancellationToken);
+            return Results.Ok(summary);
+        })
+        .RequireAuthorization("Permission:tasks.view_assigned")
+        .WithName("GetAssignedTaskSummary")
+        .Produces<TaskSummaryResponse>();
+
+        // GET /api/tasks/assigned/{id} - Get specific assigned task
+        tasksGroup.MapGet("/assigned/{id:guid}", async (
+            Guid id,
+            ClaimsPrincipal user,
+            TaskService taskService,
+            CancellationToken cancellationToken = default) =>
+        {
+            var userId = GetUserId(user);
+            var task = await taskService.GetTaskByIdForPmAsync(id, userId, cancellationToken);
+            if (task == null) return Results.NotFound("Task not found or not authorized.");
+            return Results.Ok(task);
+        })
+        .RequireAuthorization("Permission:tasks.view_assigned")
+        .WithName("GetAssignedTaskById")
+        .Produces<TaskResponse>();
+
+        // POST /api/tasks/assigned - Create and assign task to another user
+        tasksGroup.MapPost("/assigned", async (
+            CreateTaskRequest request,
+            ClaimsPrincipal user,
+            TaskService taskService,
+            CancellationToken cancellationToken = default) =>
+        {
+            var userId = GetUserId(user);
+            var userEmail = user.FindFirst(ClaimTypes.Email)?.Value ?? user.FindFirst("email")?.Value;
+
+            try
+            {
+                var task = await taskService.CreateAssignedTaskAsync(userId, request, userEmail ?? string.Empty, cancellationToken);
+                return Results.Created($"/api/tasks/assigned/{task.Id}", task);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ex.Message);
+            }
+        })
+        .RequireAuthorization("Permission:tasks.assign")
+        .WithName("CreateAssignedTask")
+        .Produces<TaskResponse>();
+
+        // PUT /api/tasks/assigned/{id} - Update assigned task (PM can reassign, update status, etc.)
+        tasksGroup.MapPut("/assigned/{id:guid}", async (
+            Guid id,
+            UpdateTaskRequest request,
+            ClaimsPrincipal user,
+            TaskService taskService,
+            CancellationToken cancellationToken = default) =>
+        {
+            var userId = GetUserId(user);
+
+            try
+            {
+                var task = await taskService.UpdateAssignedTaskAsync(id, userId, request, cancellationToken);
+                return Results.Ok(task);
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound("Task not found or not authorized.");
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ex.Message);
+            }
+        })
+        .RequireAuthorization("Permission:tasks.assign")
+        .WithName("UpdateAssignedTask")
+        .Produces<TaskResponse>();
+
+        // POST /api/tasks/assigned/{id}/advance - Advance assigned task status
+        tasksGroup.MapPost("/assigned/{id:guid}/advance", async (
+            Guid id,
+            ClaimsPrincipal user,
+            TaskService taskService,
+            CancellationToken cancellationToken = default) =>
+        {
+            var userId = GetUserId(user);
+
+            try
+            {
+                var task = await taskService.AdvanceAssignedTaskStatusAsync(id, userId, cancellationToken);
+                return Results.Ok(task);
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound("Task not found or not authorized.");
+            }
+        })
+        .RequireAuthorization("Permission:tasks.assign")
+        .WithName("AdvanceAssignedTaskStatus")
         .Produces<TaskResponse>();
     }
 

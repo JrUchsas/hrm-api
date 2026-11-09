@@ -112,5 +112,9 @@ public sealed class MongoDbContext
         await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskUserCreatedIndex));
         var taskDueDateIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.DueDate);
         await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskDueDateIndex));
+        var taskAssignedByIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.AssignedByUserId);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskAssignedByIndex));
+        var taskAssignedByStatusIndex = Builders<TaskItem>.IndexKeys.Ascending(t => t.AssignedByUserId).Ascending(t => t.Status);
+        await Tasks.Indexes.CreateOneAsync(new CreateIndexModel<TaskItem>(taskAssignedByStatusIndex));
     }
 }

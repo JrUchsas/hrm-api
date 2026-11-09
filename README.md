@@ -1,6 +1,6 @@
 # HRM-Api - Authentication, RBAC & Attendance Management API
 
-A high-performance, secure .NET 10 Minimal API microservice providing enterprise **Authentication, Role-Based Access Control (RBAC), Password Reset, Daily Attendance Management, and Leave Management (Sick & Casual Leave)** capabilities backed by **MongoDB**.
+A high-performance, secure .NET 10 Minimal API microservice providing enterprise **Authentication, Role-Based Access Control (RBAC), Password Reset, Daily Attendance Management, Leave Management (Sick & Casual Leave), and Task Management** capabilities backed by **MongoDB**.
 
 ---
 
@@ -59,7 +59,8 @@ d:\All Codes\Projects\
 │   │   ├── AttendanceEndpoints.cs        # Attendance API endpoint route definitions
 │   │   ├── LeaveService.cs               # Leave balance, application, approval logic
 │   │   ├── LeaveEndpoints.cs             # Leave Management API endpoint route definitions
-│   │   └── TaskService.cs                # Task business logic (CRUD, filtering, status transitions)
+│   │   ├── TaskService.cs                # Task business logic (CRUD, filtering, status transitions, assignment)
+│   │   └── ReportsService.cs             # Analytics & reporting service
 │   ├── Endpoints\
 │   │   ├── LeaveEndpoints.cs             # Leave Management API endpoint route definitions
 │   │   ├── ReportsEndpoints.cs           # Reports & Analytics API endpoint route definitions
@@ -85,14 +86,14 @@ d:\All Codes\Projects\
 
 ### 2. `Role` (`roles` collection)
 - `Id` (`Guid`)
-- `Name` (`string`, unique index, e.g. `"super admin"`, `"hr manager"`, `"user"`)
+- `Name` (`string`, unique index, e.g. `"super admin"`, `"hr manager"`, `"project manager"`, `"user"`)
 - `Description` (`string?`)
 - `CreatedAt` & `UpdatedAt` (`DateTimeOffset`)
 
 ### 3. `Permission` (`permissions` collection)
 - `Id` (`Guid`)
-- `Resource` (`string`, e.g. `"users"`, `"roles"`, `"permissions"`, `"profile"`)
-- `Action` (`string`, e.g. `"read"`, `"create"`, `"update"`, `"delete"`)
+- `Resource` (`string`, e.g. `"users"`, `"roles"`, `"permissions"`, `"profile"`, `"tasks"`)
+- `Action` (`string`, e.g. `"read"`, `"create"`, `"update"`, `"delete"`, `"assign"`, `"view_assigned"`)
 - `Description` (`string?`)
 - Compound unique index on `(Resource, Action)`
 - Calculated property: `FullName => $"{Resource}.{Action}"`
@@ -205,6 +206,43 @@ All leave request API responses include a computed `StatusDisplay` field for UI-
 
 ---
 
+### 16. `TaskState` (enum)
+- `Unopened = 1` → Display: "Unopened" | **Color: Cyan**
+- `Ongoing = 2` → Display: "Ongoing" | **Color: Yellow**
+- `Completed = 3` → Display: "Completed" | **Color: Green**
+- `Due = 4` → Display: "Due" | **Color: Red**
+
+### 17. `TaskPriority` (enum)
+- `Low = 1` → Display: "Low"
+- `Medium = 2` → Display: "Medium"
+- `High = 3` → Display: "High"
+
+### 18. `TaskItem` (`tasks` collection)
+- `Id` (`Guid`, stored as BSON string)
+- `UserId` (`Guid`, indexed)
+- `Title` (`string`, required, max 200 chars)
+- `Description` (`string`, optional, max 2000 chars)
+- `Status` (`TaskState` enum, default Unopened)
+- `Priority` (`TaskPriority` enum, default Medium)
+- `Category` (`string`, default "Operations")
+- `DueDate` (`DateOnly?`, optional)
+- `CreatedAtUtc` & `UpdatedAtUtc` (`DateTimeOffset`)
+- `CompletedAtUtc` (`DateTimeOffset?`)
+- `AssigneeEmail` (`string?`, denormalized for quick display)
+- `AssignedByUserId` (`Guid?`, for tasks assigned by Project Manager)
+- `AssignedAtUtc` (`DateTimeOffset?`, when task was assigned)
+- **Indexes**: `UserId`, `UserId+Status`, `UserId+Priority`, `UserId+Category`, `UserId+CreatedAtUtc`, `DueDate`, `AssignedByUserId`, `AssignedByUserId+Status`
+
+### 19. `TaskResponse` (API response DTO)
+All task responses include computed fields for UI:
+- `statusDisplay`: "Unopened" | "Ongoing" | "Completed" | "Due"
+- `statusColor`: "cyan" | "yellow" | "green" | "red"
+- `priorityDisplay`: "Low" | "Medium" | "High"
+- `isOverdue`: `true` if `dueDate` < today and status != `Completed`
+- `assignedByUserId`, `assignedAtUtc`, `assignedByEmail` (for assigned tasks)
+
+---
+
 ## 🔌 API Endpoints Reference
 
 ### 1. Authentication Endpoints (`/api/auth`)
@@ -236,7 +274,7 @@ All leave request API responses include a computed `StatusDisplay` field for UI-
 | `GET` | `/api/rbac/permissions` | `super admin` | Lists all available system permissions. |
 | `POST` | `/api/rbac/permissions` | `super admin` | Registers a new system permission (`Resource` + `Action`). |
 | `GET` | `/api/rbac/users/{userId}/roles` | `super admin` or `hr manager` | Gets user's assigned roles and resolved permission list. |
-| `POST` | `/api/rbac/users/{userId}/roles` | `super admin` or `hr manager` | Assigns a role to a user. HR Managers may only assign the `user` role. |
+| `POST` | `/api/rbac/users/{userId}/roles` | `super admin` or `hr manager` | Assigns a role to a user. HR Managers may only assign the `user` role. **Super Admin can assign `project manager` role.** |
 | `DELETE` | `/api/rbac/users/{userId}/roles/{roleId}` | `super admin` or `hr manager` | Removes a role from a user (guards against removing own super admin role). |
 | `GET` | `/api/rbac/users` | `super admin` | Paginated search of all users with roles, status, and verification flags. |
 | `PATCH` | `/api/rbac/users/{userId}/status` | `super admin` | Updates user status (`Active`, `Suspended`). Suspending immediately revokes all refresh tokens. |
@@ -275,7 +313,7 @@ All leave request API responses include a computed `StatusDisplay` field for UI-
 
 ### 5. Leave Management Endpoints (`/api/leaves`, `/api/admin/leaves`, `/api/leave`, `/api/admin/leave`)
 
-#### User Endpoints (All authenticated roles: `user`, `hr manager`, `super admin`)
+#### User Endpoints (All authenticated roles: `user`, `hr manager`, `super admin`, `project manager`)
 
 **Primary Routes (`/api/leaves/*`):**
 | Method | Endpoint | Auth | Description |
@@ -336,7 +374,7 @@ This matches the frontend's expected display text (e.g., "Awaiting review" sub-l
 
 These endpoints provide workforce analytics and operational reports for dashboards and management.
 
-#### User Endpoints (All authenticated roles: `user`, `hr manager`, `super admin`)
+#### User Endpoints (All authenticated roles: `user`, `hr manager`, `super admin`, `project manager`)
 
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
@@ -364,28 +402,42 @@ These endpoints provide workforce analytics and operational reports for dashboar
 - `pageSize` (default: 20, min: 1, max: 100)
 
 ---
+
 ### 7. Task Management Endpoints (`/api/tasks`)
 
-These endpoints provide a personal task management system for employees to organize work, track deliverables, and hit milestones.
+These endpoints provide a personal task management system for employees to organize work, track deliverables, and hit milestones, plus **Project Manager** capabilities for assigning and tracking tasks across team members.
 
-All endpoints require authentication (`[Auth]`). Users can only access their own tasks.
+All endpoints require authentication (`[Auth]`). Users can only access their own tasks. **Project Managers** have additional endpoints under `/api/tasks/assigned/*` (requires `Permission:tasks.assign` and `Permission:tasks.view_assigned`).
+
+#### User Endpoints (All authenticated users)
 
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/tasks` | `[Auth]` | List user's tasks with filtering and pagination. Query params: `status` (1=Todo, 2=InProgress, 3=Done), `priority` (1=Low, 2=Medium, 3=High), `category`, `search` (text search in title/description/category), `page` (default 1), `pageSize` (default 20, max 100). |
-| `GET` | `/api/tasks/summary` | `[Auth]` | Get task summary counts for dashboard. Returns: `totalTasks`, `inProgressCount`, `completedCount`, `highPriorityCount`. |
+| `GET` | `/api/tasks` | `[Auth]` | List user's tasks with filtering and pagination. Query params: `status` (1=Unopened, 2=Ongoing, 3=Completed, 4=Due), `priority` (1=Low, 2=Medium, 3=High), `category`, `search` (text search in title/description/category), `page` (default 1), `pageSize` (default 20, max 100). |
+| `GET` | `/api/tasks/summary` | `[Auth]` | Get task summary counts for dashboard. Returns: `totalTasks`, `inProgressCount`, `completedCount`, `dueCount`, `highPriorityCount`. |
 | `GET` | `/api/tasks/categories` | `[Auth]` | Get available categories (dynamic + defaults: Operations, Compliance, Security, Goals, Profile, Projects). |
 | `GET` | `/api/tasks/{id}` | `[Auth]` | Get a specific task by ID. |
 | `POST` | `/api/tasks` | `[Auth]` | Create a new task. Body: `title` (required, max 200 chars), `description` (optional, max 2000 chars), `priority` (1=Low, 2=Medium, 3=High, default 2), `category` (must be valid category, default "Operations"), `dueDate` (optional, `yyyy-MM-dd`). |
 | `PUT` | `/api/tasks/{id}` | `[Auth]` | Update a task (partial updates). Body: any combination of `title`, `description`, `status`, `priority`, `category`, `dueDate`. |
 | `DELETE` | `/api/tasks/{id}` | `[Auth]` | Delete a task. |
-| `POST` | `/api/tasks/{id}/toggle` | `[Auth]` | Quick toggle between `Todo` and `Done` status. |
-| `POST` | `/api/tasks/{id}/advance` | `[Auth]` | Advance status cycle: `Todo` → `InProgress` → `Done` → `Todo`. |
+| `POST` | `/api/tasks/{id}/advance` | `[Auth]` | Advance status cycle: `Unopened` → `Ongoing` → `Completed` → `Unopened`. |
+
+#### Project Manager Endpoints (Requires `project manager` role / `Permission:tasks.assign`, `Permission:tasks.view_assigned`)
+
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/tasks/assigned` | `Permission:tasks.view_assigned` | List tasks assigned BY the project manager with filtering and pagination. |
+| `GET` | `/api/tasks/assigned/summary` | `Permission:tasks.view_assigned` | Get summary of assigned tasks: `totalTasks`, `inProgressCount`, `completedCount`, `dueCount`, `highPriorityCount`. |
+| `GET` | `/api/tasks/assigned/{id}` | `Permission:tasks.view_assigned` | Get a specific assigned task by ID. |
+| `POST` | `/api/tasks/assigned` | `Permission:tasks.assign` | Create and assign a task to another user. Body: same as `POST /api/tasks` plus required `assigneeUserId` (Guid). |
+| `PUT` | `/api/tasks/assigned/{id}` | `Permission:tasks.assign` | Update an assigned task (PM can reassign to different user, change status, etc.). |
+| `POST` | `/api/tasks/assigned/{id}/advance` | `Permission:tasks.assign` | Advance status on assigned task: `Unopened` → `Ongoing` → `Completed` → `Unopened`. |
 
 **Task State Enum:**
-- `Todo = 1` → Display: "To do"
-- `InProgress = 2` → Display: "In progress"
-- `Done = 3` → Display: "Done"
+- `Unopened = 1` → Display: "Unopened" | **Color: Cyan**
+- `Ongoing = 2` → Display: "Ongoing" | **Color: Yellow**
+- `Completed = 3` → Display: "Completed" | **Color: Green**
+- `Due = 4` → Display: "Due" | **Color: Red**
 
 **Task Priority Enum:**
 - `Low = 1` → Display: "Low"
@@ -396,9 +448,11 @@ All endpoints require authentication (`[Auth]`). Users can only access their own
 
 **Response Fields:**
 All task responses include computed fields for UI:
-- `statusDisplay`: "To do" | "In progress" | "Done"
+- `statusDisplay`: "Unopened" | "Ongoing" | "Completed" | "Due"
+- `statusColor`: "cyan" | "yellow" | "green" | "red"
 - `priorityDisplay`: "Low" | "Medium" | "High"
-- `isOverdue`: `true` if `dueDate` < today and status != `Done`
+- `isOverdue`: `true` if `dueDate` < today and status != `Completed`
+- `assignedByUserId`, `assignedAtUtc`, `assignedByEmail` (for assigned tasks)
 
 **Task Application Validation:**
 - `Title` is required (max 200 chars)
@@ -406,14 +460,15 @@ All task responses include computed fields for UI:
 - `Priority` must be valid enum value
 - `Category` must be from valid list
 - `DueDate` optional, format `yyyy-MM-dd`
+- For assigned tasks: `assigneeUserId` must be a valid user
 
-**Example: Task Management Flow**
+**Example: User Task Management Flow**
 ```javascript
 // Get task summary for dashboard
 const summary = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks/summary', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
 });
-const { totalTasks, inProgressCount, completedCount, highPriorityCount } = await summary.json();
+const { totalTasks, inProgressCount, completedCount, dueCount, highPriorityCount } = await summary.json();
 
 // List tasks with filters
 const tasks = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks?status=1&priority=3&category=Security&search=2FA', {
@@ -438,14 +493,8 @@ const newTask = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks', {
 });
 const task = await newTask.json();
 
-// Advance task status (Todo → InProgress)
+// Advance task status (Unopened → Ongoing)
 const advanced = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.id}/advance`, {
-  method: 'POST',
-  headers: { 'Authorization': `Bearer ${accessToken}` }
-});
-
-// Toggle task status (Todo ↔ Done)
-const toggled = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.id}/toggle`, {
   method: 'POST',
   headers: { 'Authorization': `Bearer ${accessToken}` }
 });
@@ -459,7 +508,7 @@ const updated = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.
   },
   body: JSON.stringify({ 
     title: 'Updated task title',
-    status: 2, // InProgress
+    status: 2, // Ongoing
     priority: 1 // Low
   })
 });
@@ -467,7 +516,7 @@ const updated = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.
 // Get available categories
 const categories = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks/categories', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
-);
+});
 // Returns: ["Compliance", "Goals", "Operations", "Profile", "Projects", "Security"]
 
 // Delete task
@@ -475,6 +524,66 @@ await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/${task.id}`, {
   method: 'DELETE',
   headers: { 'Authorization': `Bearer ${accessToken}` }
 });
+```
+
+**Example: Project Manager Task Assignment Flow**
+```javascript
+// Project Manager: Get summary of assigned tasks
+const pmSummary = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks/assigned/summary', {
+  headers: { 'Authorization': `Bearer ${pmAccessToken}` }
+});
+const { totalTasks, inProgressCount, completedCount, dueCount, highPriorityCount } = await pmSummary.json();
+
+// Project Manager: List all tasks they assigned
+const assignedTasks = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks/assigned?status=2&page=1&pageSize=20', {
+  headers: { 'Authorization': `Bearer ${pmAccessToken}` }
+});
+const { tasks: pmTaskList, totalCount } = await assignedTasks.json();
+
+// Project Manager: Create and assign task to team member
+const assignedTask = await fetch('https://hrm-api-tjfa.onrender.com/api/tasks/assigned', {
+  method: 'POST',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${pmAccessToken}`
+  },
+  body: JSON.stringify({ 
+    title: 'Implement user authentication',
+    description: 'Add JWT-based auth with refresh token rotation',
+    priority: 3, // High
+    category: 'Security',
+    dueDate: '2026-11-30',
+    assigneeUserId: '6ad3da0e-3b91-4657-85d0-258a29f25df3' // User 1's ID
+  })
+});
+const newAssignedTask = await assignedTask.json();
+// Response includes assignedByUserId, assignedAtUtc, assigneeEmail
+
+// Project Manager: Advance assigned task status (Unopened → Ongoing)
+const advanced = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/assigned/${newAssignedTask.id}/advance`, {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${pmAccessToken}` }
+});
+
+// Project Manager: Reassign task to different user
+const reassigned = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/assigned/${newAssignedTask.id}`, {
+  method: 'PUT',
+  headers: { 
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${pmAccessToken}`
+  },
+  body: JSON.stringify({ 
+    assigneeUserId: '37a4d393-814d-495e-9930-772d704660af' // User 2's ID
+  })
+});
+
+// Project Manager: Get specific assigned task details
+const taskDetail = await fetch(`https://hrm-api-tjfa.onrender.com/api/tasks/assigned/${newAssignedTask.id}`, {
+  headers: { 'Authorization': `Bearer ${pmAccessToken}` }
+});
+const { statusDisplay, statusColor, assigneeEmail, assignedByUserId, assignedAtUtc } = await taskDetail.json();
+// statusDisplay: "Unopened" | "Ongoing" | "Completed" | "Due"
+// statusColor: "cyan" | "yellow" | "green" | "red"
 ```
 
 ---
@@ -487,11 +596,12 @@ The database automatically seeds the following users and role assignments on app
 | :--- | :--- | :--- | :--- | :--- |
 | **Super Admin** | `admin@company.com` | `AdminPass123!` | `a34f2cde-fda4-4451-a66d-b6e281d630fa` | System Administrator |
 | **HR Manager** | `hrmanager@company.com` | `HrPass123!` | `2237bc48-8948-4d7d-b22d-48e3635707ec` | Human Resources Manager |
+| **Project Manager** | `pm@company.com` | `PmPass123!` | `b8e9f2a1-5c3d-4e7f-9a1b-2c3d4e5f6a7b` | Project Manager |
 | **User 1** | `user1@company.com` | `UserPass123!` | `6ad3da0e-3b91-4657-85d0-258a29f25df3` | Employee User 1 |
 | **User 2** | `user2@company.com` | `UserPass123!` | `37a4d393-814d-495e-9930-772d704660af` | Employee User 2 |
 | **User 3** | `user3@company.com` | `UserPass123!` | `813407fd-da7a-4fdb-8aeb-097744f994ad` | Employee User 3 |
 
-> **Note**: These demo users are created on first startup if they don't exist. **Password resets persist across restarts** — the seeder repairs `Status`/`EmailVerified` if they drift, but **never overwrites a changed password**. In production, use the `/api/rbac/bootstrap/superadmin` endpoint to create your first admin, then manage users via the RBAC endpoints.
+> **Note**: These demo users are created on first startup if they don't exist. **Password resets persist across restarts** — the seeder repairs `Status`/`EmailVerified` if they drift, but **never overwrites a changed password**. In production, use the `/api/rbac/bootstrap/superadmin` endpoint to create your first admin, then manage users via the RBAC endpoints. **Super Admin and HR Manager can assign the Project Manager role to any user** via `/api/rbac/users/{userId}/roles`.
 
 ---
 
@@ -501,7 +611,7 @@ The database automatically seeds the following users and role assignments on app
 2. **Hashed Reset Tokens**: Raw tokens (32 cryptographically random bytes, URL-safe base64) are sent via email only; only the SHA-256 hash is stored in the database.
 3. **Atomic Single-Use Tokens**: Reset tokens are consumed using atomic MongoDB `UpdateOneAsync` filters, preventing replay or concurrent use.
 4. **Session Invalidation**: Password changes and resets automatically revoke all active refresh tokens, forcing re-authentication across all devices.
-5. **Dynamic Policy Authorization**: Handlers dynamically check permissions in the database using the format `Permission:<Resource>.<Action>` (e.g. `users.read`, `roles.create`).
+5. **Dynamic Policy Authorization**: Handlers dynamically check permissions in the database using the format `Permission:<Resource>.<Action>` (e.g. `users.read`, `roles.create`, `tasks.assign`).
 6. **Rate Limiting**: Fixed-window rate limiting is enforced on sensitive authentication endpoints to mitigate brute force and credential stuffing attacks.
 
 ### Password Reset Without an Email Provider (Development)
@@ -865,9 +975,10 @@ const reject = await fetch(`https://hrm-api-tjfa.onrender.com/api/admin/leave/${
     rejectionReason: "Insufficient team coverage during that period" 
   })
 });
+```
 
-// ============ REPORTS EXAMPLES ============
-
+### Example: Reports Flow
+```javascript
 // User: Get workforce summary (last 30 days by default)
 const summary = await fetch('https://hrm-api-tjfa.onrender.com/api/reports/summary', {
   headers: { 'Authorization': `Bearer ${accessToken}` }
@@ -924,6 +1035,7 @@ const holidayReport = await fetch('https://hrm-api-tjfa.onrender.com/api/admin/r
 });
 const { holidays } = await holidayReport.json();
 // Each: {name, date, isRecurring, type: "Static"|"Recurring"}
+```
 
 ### CORS Configuration
 For production, update `Program.cs` to restrict origins:
