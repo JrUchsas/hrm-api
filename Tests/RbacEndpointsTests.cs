@@ -89,9 +89,9 @@ public sealed class RbacEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var result = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.True(result.TryGetProperty("Items", out _));
-        Assert.True(result.TryGetProperty("Total", out _));
-        var users = result.GetProperty("Items").EnumerateArray().ToList();
+        Assert.True(result.TryGetProperty("Items", out var items));
+        Assert.True(result.TryGetProperty("Total", out var total));
+        var users = items.EnumerateArray().ToList();
         Assert.True(users.Count >= 5); // At least 5 seeded users (admin, hr, pm, user1-3)
 
         ClearAuthHeader();

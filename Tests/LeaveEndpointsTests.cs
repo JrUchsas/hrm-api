@@ -422,7 +422,10 @@ public sealed class LeaveEndpointsTests : IClassFixture<WebApplicationFactory<Pr
         // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var error = await response.Content.ReadAsStringAsync();
-        Assert.Contains("rejection reason", error, StringComparison.OrdinalIgnoreCase);
+        // Error format: {"message":"Rejection reason is required when rejecting a leave request."}
+        var startsWithBadRequest = error.StartsWith("{") && error.Contains("\"message\"");
+        var hasRejectionReason = error.Contains("rejection reason", StringComparison.OrdinalIgnoreCase);
+        Assert.True(startsWithBadRequest && hasRejectionReason);
 
         ClearAuthHeader();
     }

@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using MongoDB.Driver;
 using Xunit;
 
 namespace HrmApi.Tests;
@@ -111,7 +113,7 @@ public sealed class AuthEndpointsTests : IClassFixture<WebApplicationFactory<Pro
     [Fact]
     public async Task Auth_Register_CreatesNewUserAndReturnsTokens()
     {
-        // Act - Register a new unique user
+        // Act - Register a new unique user (cleaned up after test)
         var uniqueEmail = $"newuser{Guid.NewGuid():N}@test.com";
         var response = await _client.PostAsJsonAsync("/api/auth/register", new
         {
@@ -126,6 +128,17 @@ public sealed class AuthEndpointsTests : IClassFixture<WebApplicationFactory<Pro
         Assert.True(result.TryGetProperty("accessToken", out _));
         Assert.True(result.TryGetProperty("refreshToken", out _));
         Assert.Equal(uniqueEmail, result.GetProperty("email").GetString());
+
+        // Cleanup: Delete the test user (find by email since AuthResponse doesn't include ID)
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<HrmApi.Data.MongoDbContext>();
+        var user = await dbContext.Users.Find(u => u.Email == uniqueEmail).FirstOrDefaultAsync();
+        if (user != null)
+        {
+            await dbContext.Users.DeleteOneAsync(u => u.Email == uniqueEmail);
+            await dbContext.UserRoles.DeleteManyAsync(ur => ur.UserId == user.Id);
+            await dbContext.RefreshTokens.DeleteManyAsync(rt => rt.UserId == user.Id);
+        }
     }
 
     [Fact]
