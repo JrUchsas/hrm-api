@@ -14,7 +14,7 @@ public sealed class TaskService
         _db = db;
     }
 
-    // Get tasks for a user (own tasks or tasks assigned by PM)
+    // Get tasks assigned TO a user (employee view)
     public async Task<TaskListResponse> GetTasksAsync(
         Guid userId,
         TaskState? status,
@@ -153,53 +153,7 @@ public sealed class TaskService
         return task != null ? MapToResponse(task) : null;
     }
 
-    public async Task<TaskResponse> CreateTaskAsync(Guid userId, CreateTaskRequest request, string userEmail, CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(request.Title))
-        {
-            throw new ArgumentException("Task title is required.");
-        }
-
-        if (request.Title.Length > 200)
-        {
-            throw new ArgumentException("Task title cannot exceed 200 characters.");
-        }
-
-        if (request.Description?.Length > 2000)
-        {
-            throw new ArgumentException("Task description cannot exceed 2000 characters.");
-        }
-
-        if (!Enum.IsDefined(typeof(TaskPriority), request.Priority))
-        {
-            throw new ArgumentException("Invalid priority.");
-        }
-
-        var validCategories = new[] { "Operations", "Compliance", "Security", "Goals", "Profile", "Projects" };
-        if (!validCategories.Contains(request.Category))
-        {
-            throw new ArgumentException("Invalid category.");
-        }
-
-        var task = new TaskItem
-        {
-            UserId = userId,
-            Title = request.Title.Trim(),
-            Description = request.Description?.Trim() ?? string.Empty,
-            Priority = request.Priority,
-            Category = request.Category,
-            DueDate = request.DueDate,
-            AssigneeEmail = userEmail,
-            CreatedAtUtc = DateTimeOffset.UtcNow,
-            UpdatedAtUtc = DateTimeOffset.UtcNow
-        };
-
-        await _db.Tasks.InsertOneAsync(task, cancellationToken: cancellationToken);
-
-        return MapToResponse(task);
-    }
-
-    // Create task and assign to another user (Project Manager feature)
+    // Create task and assign to another user (Project Manager only)
     public async Task<TaskResponse> CreateAssignedTaskAsync(Guid projectManagerId, CreateTaskRequest request, string projectManagerEmail, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(request.Title))
@@ -256,100 +210,6 @@ public sealed class TaskService
         };
 
         await _db.Tasks.InsertOneAsync(task, cancellationToken: cancellationToken);
-
-        return MapToResponse(task);
-    }
-
-    public async Task<TaskResponse> UpdateTaskAsync(Guid taskId, Guid userId, UpdateTaskRequest request, CancellationToken cancellationToken = default)
-    {
-        var task = await _db.Tasks
-            .Find(t => t.Id == taskId && t.UserId == userId)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (task == null)
-        {
-            throw new KeyNotFoundException("Task not found.");
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Title))
-        {
-            if (request.Title.Length > 200)
-            {
-                throw new ArgumentException("Task title cannot exceed 200 characters.");
-            }
-            task.Title = request.Title.Trim();
-        }
-
-        if (request.Description != null)
-        {
-            if (request.Description.Length > 2000)
-            {
-                throw new ArgumentException("Task description cannot exceed 2000 characters.");
-            }
-            task.Description = request.Description.Trim();
-        }
-
-        if (request.Status.HasValue)
-        {
-            if (!Enum.IsDefined(typeof(TaskState), request.Status.Value))
-            {
-                throw new ArgumentException("Invalid task status.");
-            }
-
-            if (task.Status != request.Status.Value)
-            {
-                task.Status = request.Status.Value;
-
-                if (request.Status.Value == TaskState.Completed && task.CompletedAtUtc == null)
-                {
-                    task.CompletedAtUtc = DateTimeOffset.UtcNow;
-                }
-                else if (request.Status.Value != TaskState.Completed)
-                {
-                    task.CompletedAtUtc = null;
-                }
-            }
-        }
-
-        if (request.Priority.HasValue)
-        {
-            if (!Enum.IsDefined(typeof(TaskPriority), request.Priority.Value))
-            {
-                throw new ArgumentException("Invalid priority.");
-            }
-            task.Priority = request.Priority.Value;
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Category))
-        {
-            var validCategories = new[] { "Operations", "Compliance", "Security", "Goals", "Profile", "Projects" };
-            if (!validCategories.Contains(request.Category))
-            {
-                throw new ArgumentException("Invalid category.");
-            }
-            task.Category = request.Category;
-        }
-
-        if (request.DueDate.HasValue)
-        {
-            task.DueDate = request.DueDate.Value;
-        }
-
-        // Handle reassignment (only for PM)
-        if (request.AssigneeUserId.HasValue)
-        {
-            var assignee = await _db.Users.Find(u => u.Id == request.AssigneeUserId.Value).FirstOrDefaultAsync(cancellationToken);
-            if (assignee == null)
-            {
-                throw new ArgumentException("Assignee user not found.");
-            }
-            task.UserId = request.AssigneeUserId.Value;
-            task.AssigneeEmail = assignee.Email;
-        }
-
-        task.UpdatedAtUtc = DateTimeOffset.UtcNow;
-
-        await _db.Tasks.ReplaceOneAsync(t => t.Id == taskId, task, cancellationToken: cancellationToken);
 
         return MapToResponse(task);
     }
@@ -449,42 +309,7 @@ public sealed class TaskService
         return MapToResponse(task);
     }
 
-    public async Task<bool> DeleteTaskAsync(Guid taskId, Guid userId, CancellationToken cancellationToken = default)
-    {
-        var result = await _db.Tasks.DeleteOneAsync(t => t.Id == taskId && t.UserId == userId, cancellationToken);
-        return result.DeletedCount > 0;
-    }
-
-    public async Task<TaskResponse> ToggleTaskStatusAsync(Guid taskId, Guid userId, CancellationToken cancellationToken = default)
-    {
-        var task = await _db.Tasks
-            .Find(t => t.Id == taskId && t.UserId == userId)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (task == null)
-        {
-            throw new KeyNotFoundException("Task not found.");
-        }
-
-        // Toggle between Unopened and Completed
-        task.Status = task.Status == TaskState.Completed ? TaskState.Unopened : TaskState.Completed;
-
-        if (task.Status == TaskState.Completed)
-        {
-            task.CompletedAtUtc = DateTimeOffset.UtcNow;
-        }
-        else
-        {
-            task.CompletedAtUtc = null;
-        }
-
-        task.UpdatedAtUtc = DateTimeOffset.UtcNow;
-
-        await _db.Tasks.ReplaceOneAsync(t => t.Id == taskId, task, cancellationToken: cancellationToken);
-
-        return MapToResponse(task);
-    }
-
+    // Employee: Advance task status (forward only: Unopened -> Ongoing -> Completed -> Due if overdue)
     public async Task<TaskResponse> AdvanceTaskStatusAsync(Guid taskId, Guid userId, CancellationToken cancellationToken = default)
     {
         var task = await _db.Tasks
@@ -496,12 +321,18 @@ public sealed class TaskService
             throw new KeyNotFoundException("Task not found.");
         }
 
+        // Employee can only advance forward: Unopened -> Ongoing -> Completed -> Due (if overdue)
+        // Cannot go back to Unopened
+        var isOverdue = task.DueDate.HasValue
+            && task.DueDate.Value < DateOnly.FromDateTime(DateTime.UtcNow)
+            && task.Status != TaskState.Completed;
+
         task.Status = task.Status switch
         {
             TaskState.Unopened => TaskState.Ongoing,
             TaskState.Ongoing => TaskState.Completed,
-            TaskState.Completed => TaskState.Unopened,
-            TaskState.Due => TaskState.Unopened,
+            TaskState.Completed => isOverdue ? TaskState.Due : TaskState.Completed, // Go to Due if deadline missed, else stay Completed
+            TaskState.Due => TaskState.Ongoing, // Due -> Ongoing (resume work)
             _ => TaskState.Unopened
         };
 
@@ -521,7 +352,7 @@ public sealed class TaskService
         return MapToResponse(task);
     }
 
-    // Project Manager: Advance status on assigned task
+    // Project Manager: Advance status on assigned task (can cycle, but Completed -> Due if overdue)
     public async Task<TaskResponse> AdvanceAssignedTaskStatusAsync(Guid taskId, Guid projectManagerId, CancellationToken cancellationToken = default)
     {
         var task = await _db.Tasks
@@ -533,11 +364,16 @@ public sealed class TaskService
             throw new KeyNotFoundException("Task not found or not authorized.");
         }
 
+        // PM can cycle: Unopened -> Ongoing -> Completed -> (Due if overdue, else Unopened)
+        var isOverdue = task.DueDate.HasValue
+            && task.DueDate.Value < DateOnly.FromDateTime(DateTime.UtcNow)
+            && task.Status != TaskState.Completed;
+
         task.Status = task.Status switch
         {
             TaskState.Unopened => TaskState.Ongoing,
             TaskState.Ongoing => TaskState.Completed,
-            TaskState.Completed => TaskState.Unopened,
+            TaskState.Completed => isOverdue ? TaskState.Due : TaskState.Unopened,
             TaskState.Due => TaskState.Unopened,
             _ => TaskState.Unopened
         };
@@ -620,7 +456,6 @@ public sealed class TaskService
         CompletedAtUtc = task.CompletedAtUtc,
         AssigneeEmail = task.AssigneeEmail,
         AssignedByUserId = task.AssignedByUserId,
-        AssignedAtUtc = task.AssignedAtUtc,
-        AssignedByEmail = task.AssignedByUserId.HasValue ? null : null // Will be populated separately if needed
+        AssignedAtUtc = task.AssignedAtUtc
     };
 }
