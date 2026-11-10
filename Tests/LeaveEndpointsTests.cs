@@ -287,8 +287,13 @@ public sealed class LeaveEndpointsTests : IClassFixture<WebApplicationFactory<Pr
             endDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(2)).ToString("yyyy-MM-dd"),
             reason = "To approve"
         });
-        var created = await createResponse.Content.ReadFromJsonAsync<JsonElement>();
-        var leaveId = created.GetProperty("id").GetGuid();
+        var createContent = await createResponse.Content.ReadAsStringAsync();
+        if (!createResponse.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Create leave failed: {createResponse.StatusCode} - {createContent}");
+        }
+        var jsonDoc = JsonDocument.Parse(createContent);
+        var leaveId = jsonDoc.RootElement.GetProperty("id").GetGuid();
 
         // Admin approves it
         SetAuthHeader(adminToken);
@@ -398,6 +403,7 @@ public sealed class LeaveEndpointsTests : IClassFixture<WebApplicationFactory<Pr
     public async Task Leave_Admin_ReviewReject_RequiresReason()
     {
         // Arrange
+        await CleanupLeaveRequestsAsync();
         var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
         var userToken = await LoginAsync("user1@company.com", "UserPass123!");
 
@@ -409,8 +415,18 @@ public sealed class LeaveEndpointsTests : IClassFixture<WebApplicationFactory<Pr
             endDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(2)).ToString("yyyy-MM-dd"),
             reason = "Reject test"
         });
-        var created = await createResponse.Content.ReadFromJsonAsync<JsonElement>();
-        var leaveId = created.GetProperty("id").GetGuid();
+        // Read response content first
+        var createContent = await createResponse.Content.ReadAsStringAsync();
+        Console.WriteLine($"Create response status: {createResponse.StatusCode}");
+        Console.WriteLine($"Create response content: {createContent}");
+        Console.WriteLine($"Content-Type: {createResponse.Content.Headers.ContentType}");
+        if (!createResponse.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Create leave failed: {createResponse.StatusCode} - {createContent}");
+        }
+        // Parse as JSON
+        var jsonDoc = JsonDocument.Parse(createContent);
+        var leaveId = jsonDoc.RootElement.GetProperty("id").GetGuid();
 
         // Act - Admin rejects without reason
         SetAuthHeader(adminToken);
@@ -422,6 +438,7 @@ public sealed class LeaveEndpointsTests : IClassFixture<WebApplicationFactory<Pr
         // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var error = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"Reject response: {error}");
         // Error format: {"message":"Rejection reason is required when rejecting a leave request."}
         var startsWithBadRequest = error.StartsWith("{") && error.Contains("\"message\"");
         var hasRejectionReason = error.Contains("rejection reason", StringComparison.OrdinalIgnoreCase);

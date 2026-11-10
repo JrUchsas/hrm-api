@@ -5,8 +5,17 @@ using HrmApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
+using System.IO;
 
 namespace HrmApi.Endpoints;
+
+public sealed class UploadResponse
+{
+    public string Url { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public long Size { get; set; }
+    public string ContentType { get; set; } = string.Empty;
+}
 
 public static class LeaveEndpoints
 {
@@ -63,12 +72,12 @@ public static class LeaveEndpoints
 
             if (string.IsNullOrWhiteSpace(request.Reason))
             {
-                return Results.BadRequest("Reason is required.");
+                return Results.BadRequest(new { message = "Reason is required." });
             }
 
             if (request.Reason.Length > 500)
             {
-                return Results.BadRequest("Reason cannot exceed 500 characters.");
+                return Results.BadRequest(new { message = "Reason cannot exceed 500 characters." });
             }
 
             try
@@ -85,6 +94,80 @@ public static class LeaveEndpoints
                 return Results.BadRequest(ex.Message);
             }
         }).WithName("ApplyLeave");
+
+        // POST /api/leaves/upload - Upload PDF attachment for leave request
+        leavesGroup.MapPost("/upload", async (
+            IFormFile file,
+            ClaimsPrincipal user,
+            CancellationToken cancellationToken) =>
+        {
+            var userId = GetUserId(user);
+
+            // Validate file
+            if (file == null || file.Length == 0)
+            {
+                return Results.BadRequest(new { message = "No file uploaded." });
+            }
+
+            // Only allow PDF
+            if (!file.ContentType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.BadRequest(new { message = "Only PDF files are allowed." });
+            }
+
+            // Max 5MB
+            const long maxSize = 5 * 1024 * 1024;
+            if (file.Length > maxSize)
+            {
+                return Results.BadRequest(new { message = "File size cannot exceed 5MB." });
+            }
+
+            // Generate unique filename
+            var extension = Path.GetExtension(file.FileName);
+            var uniqueFileName = $"{Guid.NewGuid()}{extension}";
+            var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "uploads", "leaves");
+            Directory.CreateDirectory(uploadsPath);
+            var filePath = Path.Combine(uploadsPath, uniqueFileName);
+
+            // Save file
+            await using var stream = new FileStream(filePath, FileMode.Create);
+            await file.CopyToAsync(stream, cancellationToken);
+
+            // Return URL that can be used in leave application
+            var url = $"/api/leaves/files/{uniqueFileName}";
+            return Results.Ok(new UploadResponse
+            {
+                Url = url,
+                FileName = file.FileName,
+                Size = file.Length,
+                ContentType = file.ContentType
+            });
+        }).DisableAntiforgery()
+        .WithName("UploadLeaveAttachment")
+        .Accepts<IFormFile>("multipart/form-data");
+
+        // GET /api/leaves/files/{fileName} - Serve uploaded PDF
+        leavesGroup.MapGet("/files/{fileName}", async (
+            string fileName,
+            HttpResponse response,
+            CancellationToken cancellationToken) =>
+        {
+            // Prevent path traversal
+            if (fileName.Contains("..") || fileName.Contains("/") || fileName.Contains("\\"))
+            {
+                return Results.NotFound();
+            }
+
+            var filePath = Path.Combine(Directory.GetCurrentDirectory(), "uploads", "leaves", fileName);
+            if (!File.Exists(filePath))
+            {
+                return Results.NotFound();
+            }
+
+            var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return Results.File(fileStream, "application/pdf", fileName);
+        }).WithName("GetLeaveAttachment")
+        .AllowAnonymous(); // Allow access without auth for direct file links
 
         // DELETE /api/leaves/{id}/cancel - Cancel a pending leave request
         leavesGroup.MapDelete("/{id:guid}/cancel", async (
@@ -141,7 +224,7 @@ public static class LeaveEndpoints
 
             if (!request.Approve && string.IsNullOrWhiteSpace(request.RejectionReason))
             {
-                return Results.BadRequest("Rejection reason is required when rejecting a leave request.");
+                return Results.BadRequest(new { message = "Rejection reason is required when rejecting a leave request." });
             }
 
             if (request.RejectionReason?.Length > 500)

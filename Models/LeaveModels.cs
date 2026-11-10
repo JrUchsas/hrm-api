@@ -130,6 +130,12 @@ public sealed class LeaveRequest
     [BsonElement("reason")]
     public string Reason { get; set; } = string.Empty;
 
+    [BsonElement("attachmentUrl")]
+    public string? AttachmentUrl { get; set; }
+
+    [BsonElement("attachmentName")]
+    public string? AttachmentName { get; set; }
+
     [BsonElement("status")]
     public LeaveStatus Status { get; set; } = LeaveStatus.Pending;
 
@@ -158,6 +164,8 @@ public sealed class ApplyLeaveRequestDto
     public DateOnly StartDate { get; set; }
     public DateOnly EndDate { get; set; }
     public string Reason { get; set; } = string.Empty;
+    public string? AttachmentUrl { get; set; }
+    public string? AttachmentName { get; set; }
 }
 
 public sealed class ReviewLeaveRequestDto
@@ -187,6 +195,8 @@ public sealed class LeaveRequestResponse
     public DateOnly EndDate { get; set; }
     public int DaysCount { get; set; }
     public string Reason { get; set; } = string.Empty;
+    public string? AttachmentUrl { get; set; }
+    public string? AttachmentName { get; set; }
     public LeaveStatus Status { get; set; }
     public Guid? ReviewedByUserId { get; set; }
     public string? ReviewerEmail { get; set; }

@@ -172,6 +172,8 @@ public sealed class LeaveService(MongoDbContext db)
             EndDate = dto.EndDate,
             DaysCount = daysCount,
             Reason = dto.Reason?.Trim() ?? string.Empty,
+            AttachmentUrl = dto.AttachmentUrl?.Trim(),
+            AttachmentName = dto.AttachmentName?.Trim(),
             Status = LeaveStatus.Pending,
             CreatedAtUtc = DateTimeOffset.UtcNow,
             UpdatedAtUtc = DateTimeOffset.UtcNow
@@ -489,6 +491,8 @@ public sealed class LeaveService(MongoDbContext db)
             EndDate = request.EndDate,
             DaysCount = request.DaysCount,
             Reason = request.Reason,
+            AttachmentUrl = request.AttachmentUrl,
+            AttachmentName = request.AttachmentName,
             Status = request.Status,
             ReviewedByUserId = request.ReviewedByUserId,
             ReviewedAtUtc = request.ReviewedAtUtc,
