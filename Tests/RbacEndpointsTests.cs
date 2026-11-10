@@ -304,4 +304,239 @@ public sealed class RbacEndpointsTests : IClassFixture<WebApplicationFactory<Pro
 
         ClearAuthHeader();
     }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_AdminToken_CreatesUser()
+    {
+        // Arrange
+        var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
+        SetAuthHeader(adminToken);
+
+        var newEmail = $"newuser-{Guid.NewGuid():N}@company.com";
+
+        // Act - Enroll new employee
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = newEmail,
+            password = "NewUserPass123!",
+            goal = "New employee goal"
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(newEmail, result.GetProperty("email").GetString());
+        Assert.Equal("New employee goal", result.GetProperty("goal").GetString());
+        Assert.Equal("Active", result.GetProperty("status").GetString());
+        Assert.True(result.GetProperty("emailVerified").GetBoolean());
+        Assert.Equal("user", result.GetProperty("role").GetString());
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_HrManagerToken_CreatesUserWithDefaultRole()
+    {
+        // Arrange
+        var hrToken = await LoginAsync("hrmanager@company.com", "HrPass123!");
+        SetAuthHeader(hrToken);
+
+        var newEmail = $"hrnewuser-{Guid.NewGuid():N}@company.com";
+
+        // Act - Enroll new employee (HR manager can only assign "user" role)
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = newEmail,
+            password = "NewUserPass123!",
+            goal = "HR enrolled employee"
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(newEmail, result.GetProperty("email").GetString());
+        Assert.Equal("user", result.GetProperty("role").GetString());
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_HrManagerCannotAssignNonUserRole()
+    {
+        // Arrange
+        var hrToken = await LoginAsync("hrmanager@company.com", "HrPass123!");
+
+        // Get "project manager" role ID using admin token (HR manager can't list roles)
+        var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
+        SetAuthHeader(adminToken);
+        var rolesResponse = await _client.GetAsync("/api/rbac/roles");
+        Assert.Equal(HttpStatusCode.OK, rolesResponse.StatusCode);
+        var rolesContent = await rolesResponse.Content.ReadAsStringAsync();
+        Console.WriteLine($"Roles response: {rolesContent}");
+        var rolesJson = JsonDocument.Parse(rolesContent).RootElement;
+        var pmRole = rolesJson.EnumerateArray()
+            .First(r => r.GetProperty("name").GetString() == "project manager");
+        var pmRoleId = pmRole.GetProperty("id").GetGuid();
+        ClearAuthHeader();
+
+        // Now use HR manager token
+        SetAuthHeader(hrToken);
+        var newEmail = $"hrnewuser2-{Guid.NewGuid():N}@company.com";
+
+        // Act - Try to enroll with project manager role
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = newEmail,
+            password = "NewUserPass123!",
+            goal = "Should fail",
+            roleId = pmRoleId.ToString()
+        });
+
+        // Assert - HR manager cannot assign non-user role
+        var errorContent = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"Enroll response status: {response.StatusCode}");
+        Console.WriteLine($"Enroll response: {errorContent}");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("only assign user role", errorContent);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_AdminToken_CanAssignAnyRole()
+    {
+        // Arrange
+        var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
+        SetAuthHeader(adminToken);
+
+        // Get "project manager" role ID
+        var rolesResponse = await _client.GetAsync("/api/rbac/roles");
+        var rolesJson = await rolesResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var pmRole = rolesJson.EnumerateArray()
+            .First(r => r.GetProperty("name").GetString() == "project manager");
+        var pmRoleId = pmRole.GetProperty("id").GetGuid();
+
+        var newEmail = $"adminnewuser-{Guid.NewGuid():N}@company.com";
+
+        // Act - Enroll with project manager role
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = newEmail,
+            password = "NewUserPass123!",
+            goal = "Admin enrolled PM",
+            roleId = pmRoleId.ToString()
+        });
+
+        // Assert - Admin can assign any role
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("project manager", result.GetProperty("role").GetString());
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_DuplicateEmail_ReturnsConflict()
+    {
+        // Arrange
+        var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
+        SetAuthHeader(adminToken);
+
+        // Act - Try to enroll existing user
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = "user1@company.com",
+            password = "NewUserPass123!",
+            goal = "Duplicate"
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var error = await response.Content.ReadAsStringAsync();
+        Assert.Contains("already in use", error);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_InvalidEmail_ReturnsBadRequest()
+    {
+        // Arrange
+        var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
+        SetAuthHeader(adminToken);
+
+        // Act - Invalid email
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = "invalid-email",
+            password = "NewUserPass123!",
+            goal = "Test"
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Invalid email", error);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_ShortPassword_ReturnsBadRequest()
+    {
+        // Arrange
+        var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
+        SetAuthHeader(adminToken);
+
+        // Act - Short password
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = "shortpass@company.com",
+            password = "123",
+            goal = "Test"
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadAsStringAsync();
+        Assert.Contains("8 characters", error);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_RegularUser_Forbidden()
+    {
+        // Arrange
+        var userToken = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(userToken);
+
+        // Act
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = "new@company.com",
+            password = "NewUserPass123!",
+            goal = "Test"
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Rbac_EnrollEmployee_RequiresAuthentication()
+    {
+        // Act - No auth
+        var response = await _client.PostAsJsonAsync("/api/rbac/users/enroll", new
+        {
+            email = "new@company.com",
+            password = "NewUserPass123!",
+            goal = "Test"
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
 }

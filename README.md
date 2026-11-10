@@ -132,6 +132,11 @@ D:\All Codes\Projects\HRM-Api\
 - `POST /users/{id}/roles` `[SuperAdmin|HrManager]` — Assign role to user
 - `DELETE /users/{id}/roles/{roleId}` `[SuperAdmin|HrManager]` — Remove role from user
 - `GET /users/{id}/roles` `[Auth]` — Get user's roles and permissions
+- `POST /users/enroll` `[SuperAdmin|HrManager]` — Enroll new employee
+  - Body: `{ "email": "new@company.com", "password": "Pass123!", "goal": "Optional", "roleId": "optional-guid" }`
+  - Super admin can assign any role; HR manager can only assign "user" role
+  - Returns created user with assigned role
+  - New users are pre-verified (EmailVerified = true) and active
 
 ---
 
@@ -269,7 +274,7 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AuthEndpointsTests"
 | AuthEndpointsTests.cs | 16 | All passing |
 | LeaveEndpointsTests.cs | 30 | All passing |
 | AttendanceEndpointsTests.cs | 12 | All passing |
-| RbacEndpointsTests.cs | 11 | 9 passing |
+| RbacEndpointsTests.cs | 20 | 17 passing (3 pre-existing JSON casing issues) |
 
 ---
 

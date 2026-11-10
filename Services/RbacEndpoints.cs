@@ -520,6 +520,109 @@ public static class RbacEndpoints
         })
         .RequireAuthorization("super admin")
         .WithName("UpdateUserStatus");
+
+        // Enroll new employee (Admin/HR creates user with email, password, and optional role)
+        rbacGroup.MapPost("/users/enroll", async (
+            EnrollEmployeeRequest request,
+            ClaimsPrincipal currentUser,
+            MongoDbContext db,
+            IPasswordHasher<User> hasher,
+            PermissionService permService,
+            CancellationToken cancellationToken) =>
+        {
+            var currentUserId = GetUserId(currentUser);
+
+            // Authorization: super admin or hr manager
+            var currentUserRoles = await permService.GetUserRolesAsync(currentUserId, cancellationToken);
+            var isSuperAdmin = currentUserRoles.Contains("super admin", StringComparer.OrdinalIgnoreCase);
+            var isHrManager = currentUserRoles.Contains("hr manager", StringComparer.OrdinalIgnoreCase);
+
+            if (!isSuperAdmin && !isHrManager)
+            {
+                return Results.Forbid();
+            }
+
+            var email = request.Email.Trim().ToLowerInvariant();
+
+            // Validate email
+            try
+            {
+                var addr = new System.Net.Mail.MailAddress(email);
+                if (addr.Address != email) return Results.BadRequest(new { message = "Invalid email format." });
+            }
+            catch
+            {
+                return Results.BadRequest(new { message = "Invalid email format." });
+            }
+
+            // Validate password
+            if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 8)
+            {
+                return Results.BadRequest(new { message = "Password must be at least 8 characters." });
+            }
+
+            // Check if email already exists
+            if (await db.Users.Find(u => u.Email == email).AnyAsync(cancellationToken))
+            {
+                return Results.Conflict(new { message = "Email is already in use." });
+            }
+
+            // Determine role to assign
+            Guid roleId;
+            var userRole = await db.Roles.Find(r => r.Name == "user").FirstOrDefaultAsync(cancellationToken);
+            if (userRole == null)
+            {
+                return Results.BadRequest(new { message = "Default 'user' role not found. Run seed first." });
+            }
+            roleId = userRole.Id;
+
+            // If roleId is specified, validate it (super admin only for non-user roles)
+            if (request.RoleId.HasValue)
+            {
+                var requestedRole = await db.Roles.Find(r => r.Id == request.RoleId.Value).FirstOrDefaultAsync(cancellationToken);
+                if (requestedRole == null)
+                {
+                    return Results.NotFound(new { message = "Role not found." });
+                }
+
+                // HR managers can only assign "user" role
+                if (isHrManager && !isSuperAdmin && !requestedRole.Name.Equals("user", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.BadRequest(new { message = "HR managers can only assign user role." });
+                }
+
+                roleId = requestedRole.Id;
+            }
+
+            // Create user
+            var user = new User
+            {
+                Email = email,
+                PasswordHash = hasher.HashPassword(null!, request.Password),
+                Goal = request.Goal?.Trim(),
+                EmailVerified = true, // Admin-enrolled users are pre-verified
+                Status = UserStatus.Active
+            };
+            await db.Users.InsertOneAsync(user, cancellationToken: cancellationToken);
+
+            // Assign role
+            await db.UserRoles.InsertOneAsync(new UserRole
+            {
+                UserId = user.Id,
+                RoleId = roleId,
+                AssignedBy = currentUserId
+            }, cancellationToken: cancellationToken);
+
+            // Get assigned role name for response
+            var assignedRole = await db.Roles.Find(r => r.Id == roleId).FirstOrDefaultAsync(cancellationToken);
+
+            return Results.Created($"/api/rbac/users/{user.Id}", new EnrollEmployeeResponse(
+                user.Id, user.Email, user.Goal, user.Status.ToString(), user.EmailVerified, user.CreatedAt,
+                assignedRole?.Name ?? "user"
+            ));
+        })
+        .RequireAuthorization(policy => policy.RequireRole("super admin", "hr manager"))
+        .WithName("EnrollEmployee");
     }
 
     private static Guid GetUserId(ClaimsPrincipal user)
@@ -551,6 +654,10 @@ public record UserAdminResponse(Guid Id, string Email, string? Goal, string Stat
 public record UpdateUserStatusRequest(UserStatus Status);
 
 public record BootstrapSuperAdminRequest(string Email, string Password, string? Goal);
+
+public record EnrollEmployeeRequest(string Email, string Password, string? Goal, Guid? RoleId);
+
+public record EnrollEmployeeResponse(Guid Id, string Email, string? Goal, string Status, bool EmailVerified, DateTimeOffset CreatedAt, string Role);
 
 public record PagedResponse<T>(List<T> Items, int Page, int PageSize, long Total)
 {
