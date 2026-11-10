@@ -304,6 +304,11 @@ public sealed class LeaveService(MongoDbContext db)
                 throw new ArgumentException("Rejection reason is required when rejecting a leave request.");
             }
 
+            if (rejectionReason.Length > 500)
+            {
+                throw new ArgumentException("Rejection reason cannot exceed 500 characters.");
+            }
+
             request.Status = LeaveStatus.Rejected;
             request.ReviewedByUserId = reviewerUserId;
             request.ReviewedAtUtc = DateTimeOffset.UtcNow;
@@ -387,6 +392,16 @@ public sealed class LeaveService(MongoDbContext db)
         );
 
         return (int)await db.LeaveRequests.CountDocumentsAsync(filter, cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets a leave request by ID (for admin review to check attachment before reject).
+    /// </summary>
+    public async Task<LeaveRequest?> GetLeaveRequestByIdAsync(Guid requestId, CancellationToken cancellationToken = default)
+    {
+        return await db.LeaveRequests
+            .Find(lr => lr.Id == requestId)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <summary>

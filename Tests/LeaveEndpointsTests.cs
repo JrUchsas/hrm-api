@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -522,6 +523,376 @@ public sealed class LeaveEndpointsTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal(5, result.GetProperty("usedSickLeave").GetInt32());
         Assert.Equal(15, result.GetProperty("totalCasualLeave").GetInt32());
         Assert.Equal(3, result.GetProperty("usedCasualLeave").GetInt32());
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_Upload_RequiresAuthentication()
+    {
+        // Act - No auth header
+        using var content = new MultipartFormDataContent();
+        content.Add(new ByteArrayContent(new byte[100]), "file", "test.pdf");
+        var response = await _client.PostAsync("/api/leaves/upload", content);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Leave_Upload_ValidPdf_ReturnsUrl()
+    {
+        // Arrange
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        // Create a simple PDF content (minimal PDF)
+        var pdfContent = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n193\n%%EOF";
+        var pdfBytes = System.Text.Encoding.ASCII.GetBytes(pdfContent);
+
+        using var content = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(pdfBytes);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        content.Add(fileContent, "file", "test.pdf");
+
+        // Act
+        var response = await _client.PostAsync("/api/leaves/upload", content);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(result.TryGetProperty("url", out _));
+        Assert.True(result.TryGetProperty("fileName", out _));
+        Assert.True(result.TryGetProperty("size", out _));
+        Assert.True(result.TryGetProperty("contentType", out _));
+        Assert.Equal("application/pdf", result.GetProperty("contentType").GetString());
+        Assert.StartsWith("/api/leaves/files/", result.GetProperty("url").GetString());
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_Upload_NonPdf_ReturnsBadRequest()
+    {
+        // Arrange
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        using var content = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent("not a pdf"u8.ToArray());
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        content.Add(fileContent, "file", "test.txt");
+
+        // Act
+        var response = await _client.PostAsync("/api/leaves/upload", content);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Only PDF files are allowed", error);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_Upload_EmptyFile_ReturnsBadRequest()
+    {
+        // Arrange
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        using var content = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(new byte[0]);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        content.Add(fileContent, "file", "empty.pdf");
+
+        // Act
+        var response = await _client.PostAsync("/api/leaves/upload", content);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadAsStringAsync();
+        Assert.Contains("No file uploaded", error);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_Upload_Over5MB_ReturnsBadRequest()
+    {
+        // Arrange
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        // Create a 6MB "PDF"
+        var largePdf = new byte[6 * 1024 * 1024];
+        largePdf[0] = 0x25; // '%'
+        largePdf[1] = 0x50; // 'P'
+        largePdf[2] = 0x44; // 'D'
+        largePdf[3] = 0x46; // 'F'
+
+        using var content = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(largePdf);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        content.Add(fileContent, "file", "large.pdf");
+
+        // Act
+        var response = await _client.PostAsync("/api/leaves/upload", content);
+
+        // Assert
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadAsStringAsync();
+        Assert.Contains("5MB", error);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_Download_RequiresAuthentication()
+    {
+        // Act - No auth header
+        var response = await _client.GetAsync("/api/leaves/files/nonexistent.pdf");
+
+        // Assert - Should be 401 (auth required) not 404
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Leave_Download_ValidFile_ReturnsPdf()
+    {
+        // Arrange
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        // First upload a file
+        var pdfContent = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n193\n%%EOF";
+        var pdfBytes = System.Text.Encoding.ASCII.GetBytes(pdfContent);
+
+        using var uploadContent = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(pdfBytes);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        uploadContent.Add(fileContent, "file", "test.pdf");
+
+        var uploadResponse = await _client.PostAsync("/api/leaves/upload", uploadContent);
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+        var uploadResult = await uploadResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var url = uploadResult.GetProperty("url").GetString()!;
+        var fileName = Path.GetFileName(url);
+
+        // Act - Download the file
+        var response = await _client.GetAsync($"/api/leaves/files/{fileName}");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/pdf", response.Content.Headers.ContentType?.MediaType);
+        var downloadedBytes = await response.Content.ReadAsByteArrayAsync();
+        Assert.True(downloadedBytes.Length > 0);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_Download_NonExistentFile_ReturnsNotFound()
+    {
+        // Arrange
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        // Act - Try to download non-existent file
+        var response = await _client.GetAsync("/api/leaves/files/nonexistent-file.pdf");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_Download_PathTraversal_ReturnsNotFound()
+    {
+        // Arrange
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        // Act - Try path traversal
+        var response = await _client.GetAsync("/api/leaves/files/..%2F..%2Fetc%2Fpasswd");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_ApplyLeave_WithAttachment_Works()
+    {
+        // Arrange
+        await CleanupLeaveRequestsAsync();
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        // First upload a file
+        var pdfContent = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n193\n%%EOF";
+        var pdfBytes = System.Text.Encoding.ASCII.GetBytes(pdfContent);
+
+        using var uploadContent = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(pdfBytes);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        uploadContent.Add(fileContent, "file", "medical.pdf");
+
+        var uploadResponse = await _client.PostAsync("/api/leaves/upload", uploadContent);
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+        var uploadResult = await uploadResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var attachmentUrl = uploadResult.GetProperty("url").GetString()!;
+        var attachmentName = uploadResult.GetProperty("fileName").GetString()!;
+
+        // Act - Apply leave with attachment
+        var response = await _client.PostAsJsonAsync("/api/leaves/apply", new
+        {
+            leaveType = 1, // Sick
+            startDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)).ToString("yyyy-MM-dd"),
+            endDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(2)).ToString("yyyy-MM-dd"),
+            reason = "Medical leave with attachment",
+            attachmentUrl = attachmentUrl,
+            attachmentName = attachmentName
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(attachmentUrl, result.GetProperty("attachmentUrl").GetString());
+        Assert.Equal(attachmentName, result.GetProperty("attachmentName").GetString());
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_CancelLeave_DeletesAttachmentFile()
+    {
+        // Arrange
+        await CleanupLeaveRequestsAsync();
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        // Upload a file
+        var pdfContent = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n193\n%%EOF";
+        var pdfBytes = System.Text.Encoding.ASCII.GetBytes(pdfContent);
+
+        using var uploadContent = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(pdfBytes);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        uploadContent.Add(fileContent, "file", "test.pdf");
+
+        var uploadResponse = await _client.PostAsync("/api/leaves/upload", uploadContent);
+        var uploadResult = await uploadResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var attachmentUrl = uploadResult.GetProperty("url").GetString()!;
+        var fileName = Path.GetFileName(attachmentUrl);
+
+        // Create leave request with attachment
+        var createResponse = await _client.PostAsJsonAsync("/api/leaves/apply", new
+        {
+            leaveType = 1,
+            startDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)).ToString("yyyy-MM-dd"),
+            endDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(2)).ToString("yyyy-MM-dd"),
+            reason = "To cancel with attachment",
+            attachmentUrl = attachmentUrl,
+            attachmentName = "test.pdf"
+        });
+        var created = await createResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var leaveId = created.GetProperty("id").GetGuid();
+
+        // Act - Cancel the leave request
+        var response = await _client.DeleteAsync($"/api/leaves/{leaveId}/cancel");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // Verify file is deleted - try to download it
+        var downloadResponse = await _client.GetAsync($"/api/leaves/files/{fileName}");
+        Assert.Equal(HttpStatusCode.NotFound, downloadResponse.StatusCode);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_Admin_Reject_DeletesAttachmentFile()
+    {
+        // Arrange
+        await CleanupLeaveRequestsAsync();
+        var adminToken = await LoginAsync("admin@company.com", "AdminPass123!");
+        var userToken = await LoginAsync("user1@company.com", "UserPass123!");
+
+        SetAuthHeader(userToken);
+
+        // Upload a file
+        var pdfContent = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n193\n%%EOF";
+        var pdfBytes = System.Text.Encoding.ASCII.GetBytes(pdfContent);
+
+        using var uploadContent = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(pdfBytes);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        uploadContent.Add(fileContent, "file", "test.pdf");
+
+        var uploadResponse = await _client.PostAsync("/api/leaves/upload", uploadContent);
+        var uploadResult = await uploadResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var attachmentUrl = uploadResult.GetProperty("url").GetString()!;
+        var fileName = Path.GetFileName(attachmentUrl);
+
+        // Create leave request with attachment
+        var createResponse = await _client.PostAsJsonAsync("/api/leaves/apply", new
+        {
+            leaveType = 1,
+            startDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)).ToString("yyyy-MM-dd"),
+            endDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(2)).ToString("yyyy-MM-dd"),
+            reason = "To reject with attachment",
+            attachmentUrl = attachmentUrl,
+            attachmentName = "test.pdf"
+        });
+        var created = await createResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var leaveId = created.GetProperty("id").GetGuid();
+
+        // Act - Admin rejects the leave request
+        SetAuthHeader(adminToken);
+        var response = await _client.PostAsJsonAsync($"/api/admin/leaves/{leaveId}/review", new
+        {
+            approve = false,
+            rejectionReason = "Not approved"
+        });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Rejected", result.GetProperty("status").GetString());
+
+        // Verify file is deleted - try to download it
+        var downloadResponse = await _client.GetAsync($"/api/leaves/files/{fileName}");
+        Assert.Equal(HttpStatusCode.NotFound, downloadResponse.StatusCode);
+
+        ClearAuthHeader();
+    }
+
+    [Fact]
+    public async Task Leave_ErrorFormat_IsConsistent()
+    {
+        // Arrange
+        var token = await LoginAsync("user1@company.com", "UserPass123!");
+        SetAuthHeader(token);
+
+        // Act - Apply leave without reason (validation error)
+        var response = await _client.PostAsJsonAsync("/api/leaves/apply", new
+        {
+            leaveType = 1,
+            startDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1)).ToString("yyyy-MM-dd"),
+            endDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(2)).ToString("yyyy-MM-dd"),
+            reason = "" // Empty reason
+        });
+
+        // Assert - Error should be JSON with "message" field
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadAsStringAsync();
+        Assert.StartsWith("{", error);
+        Assert.Contains("\"message\"", error);
+        Assert.Contains("Reason is required", error);
 
         ClearAuthHeader();
     }

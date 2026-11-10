@@ -34,7 +34,8 @@ D:\All Codes\Projects\HRM-Api\
 │   ├── User.cs
 │   ├── LeaveModels.cs
 │   ├── TaskModels.cs
-│   └── AttendanceModels.cs
+│   ├── AttendanceModels.cs
+│   └── FileStorageModels.cs
 ├── Services/
 │   ├── AuthService.cs
 │   ├── LeaveService.cs
@@ -42,7 +43,8 @@ D:\All Codes\Projects\HRM-Api\
 │   ├── AttendanceService.cs
 │   ├── PermissionService.cs
 │   ├── RbacSeedService.cs
-│   └── PasswordResetTokenService.cs
+│   ├── PasswordResetTokenService.cs
+│   └── LocalFileStorageService.cs
 ├── Tests/
 │   ├── AuthEndpointsTests.cs
 │   ├── LeaveEndpointsTests.cs
@@ -94,11 +96,13 @@ D:\All Codes\Projects\HRM-Api\
 - `GET /my-history` `[Auth]` — Get user's leave application history
 - `POST /apply` `[Auth]` — Submit new leave application
   - Validates: end >= start, no overlap with pending/approved leaves, sufficient balance, **mandatory reason (max 500 chars)**
-- `DELETE /{id}/cancel` `[Auth]` — Cancel own pending leave request
+  - Optional: `attachmentUrl`, `attachmentName` from prior upload
+- `DELETE /{id}/cancel` `[Auth]` — Cancel own pending leave request (deletes attachment if present)
 - `POST /upload` `[Auth]` — Upload PDF attachment (max 5MB, PDF only)
-- `GET /files/{fileName}` — Download uploaded PDF (public access for direct links)
+  - Returns: `{ "url": "/api/leaves/files/{guid}.pdf", "fileName": "...", "size": 1234, "contentType": "application/pdf" }`
+- `GET /files/{fileName}` `[Auth]` — Download uploaded PDF (requires authentication)
 - **Admin** `GET /admin/pending` `[HrOrAdmin]` — List all pending requests (with optional status filter)
-- **Admin** `POST /admin/{id}/review` `[HrOrAdmin]` — Approve/reject leave request (reject requires reason)
+- **Admin** `POST /admin/{id}/review` `[HrOrAdmin]` — Approve/reject leave request (reject requires reason, max 500 chars; deletes attachment on reject)
 - **Admin** `POST /admin/balance/adjust` `[SuperAdmin]` — Adjust user's leave balance
 
 ### Task Management (`/api/tasks`)
@@ -177,6 +181,22 @@ CORS_ALLOWED_ORIGINS=https://your-frontend.com
 ```
 Or via `MONGODB_URI` environment variable: `mongodb+srv://user:pass@cluster.mongodb.net/`
 
+### File Storage Configuration (`appsettings.json`)
+```json
+{
+  "FileStorage": {
+    "Provider": "Local",
+    "Local": {
+      "UploadPath": "uploads/leaves",
+      "BaseUrl": "/api/leaves/files"
+    }
+  }
+}
+```
+- **Provider**: `"Local"` (default), `"AzureBlob"`, or `"S3"` (future)
+- **UploadPath**: Relative path from app directory for local storage
+- **BaseUrl**: Base URL path for generating download links
+
 ---
 
 ## 🗄️ MongoDB Indexes (Created on Startup)
@@ -247,7 +267,7 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AuthEndpointsTests"
 | TaskEndpointsTests.cs | 11 | All passing |
 | HealthEndpointsTests.cs | 7 | All passing |
 | AuthEndpointsTests.cs | 16 | All passing |
-| LeaveEndpointsTests.cs | 18 | All passing |
+| LeaveEndpointsTests.cs | 30 | All passing |
 | AttendanceEndpointsTests.cs | 12 | All passing |
 | RbacEndpointsTests.cs | 11 | 9 passing |
 

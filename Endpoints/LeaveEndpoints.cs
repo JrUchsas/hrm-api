@@ -5,17 +5,8 @@ using HrmApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
-using System.IO;
 
 namespace HrmApi.Endpoints;
-
-public sealed class UploadResponse
-{
-    public string Url { get; set; } = string.Empty;
-    public string FileName { get; set; } = string.Empty;
-    public long Size { get; set; }
-    public string ContentType { get; set; } = string.Empty;
-}
 
 public static class LeaveEndpoints
 {
@@ -67,7 +58,7 @@ public static class LeaveEndpoints
 
             if (!Enum.IsDefined(typeof(LeaveType), request.LeaveType))
             {
-                return Results.BadRequest("Invalid leave type. Must be Sick or Casual.");
+                return Results.BadRequest(new { message = "Invalid leave type. Must be Sick or Casual." });
             }
 
             if (string.IsNullOrWhiteSpace(request.Reason))
@@ -87,11 +78,11 @@ public static class LeaveEndpoints
             }
             catch (ArgumentException ex)
             {
-                return Results.BadRequest(ex.Message);
+                return Results.BadRequest(new { message = ex.Message });
             }
             catch (InvalidOperationException ex)
             {
-                return Results.BadRequest(ex.Message);
+                return Results.BadRequest(new { message = ex.Message });
             }
         }).WithName("ApplyLeave");
 
@@ -99,96 +90,69 @@ public static class LeaveEndpoints
         leavesGroup.MapPost("/upload", async (
             IFormFile file,
             ClaimsPrincipal user,
+            IFileStorageService fileStorage,
             CancellationToken cancellationToken) =>
         {
             var userId = GetUserId(user);
 
-            // Validate file
-            if (file == null || file.Length == 0)
+            try
             {
-                return Results.BadRequest(new { message = "No file uploaded." });
+                var result = await fileStorage.UploadAsync(file, cancellationToken);
+                return Results.Ok(result);
             }
-
-            // Only allow PDF
-            if (!file.ContentType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase))
+            catch (ArgumentException ex)
             {
-                return Results.BadRequest(new { message = "Only PDF files are allowed." });
+                return Results.BadRequest(new { message = ex.Message });
             }
-
-            // Max 5MB
-            const long maxSize = 5 * 1024 * 1024;
-            if (file.Length > maxSize)
-            {
-                return Results.BadRequest(new { message = "File size cannot exceed 5MB." });
-            }
-
-            // Generate unique filename
-            var extension = Path.GetExtension(file.FileName);
-            var uniqueFileName = $"{Guid.NewGuid()}{extension}";
-            var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "uploads", "leaves");
-            Directory.CreateDirectory(uploadsPath);
-            var filePath = Path.Combine(uploadsPath, uniqueFileName);
-
-            // Save file
-            await using var stream = new FileStream(filePath, FileMode.Create);
-            await file.CopyToAsync(stream, cancellationToken);
-
-            // Return URL that can be used in leave application
-            var url = $"/api/leaves/files/{uniqueFileName}";
-            return Results.Ok(new UploadResponse
-            {
-                Url = url,
-                FileName = file.FileName,
-                Size = file.Length,
-                ContentType = file.ContentType
-            });
         }).DisableAntiforgery()
         .WithName("UploadLeaveAttachment")
         .Accepts<IFormFile>("multipart/form-data");
 
-        // GET /api/leaves/files/{fileName} - Serve uploaded PDF
+        // GET /api/leaves/files/{fileName} - Serve uploaded PDF (requires auth)
         leavesGroup.MapGet("/files/{fileName}", async (
             string fileName,
-            HttpResponse response,
+            IFileStorageService fileStorage,
             CancellationToken cancellationToken) =>
         {
-            // Prevent path traversal
-            if (fileName.Contains("..") || fileName.Contains("/") || fileName.Contains("\\"))
+            var stream = await fileStorage.DownloadAsync(fileName, cancellationToken);
+            if (stream == null)
             {
                 return Results.NotFound();
             }
 
-            var filePath = Path.Combine(Directory.GetCurrentDirectory(), "uploads", "leaves", fileName);
-            if (!File.Exists(filePath))
-            {
-                return Results.NotFound();
-            }
-
-            var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            return Results.File(fileStream, "application/pdf", fileName);
-        }).WithName("GetLeaveAttachment")
-        .AllowAnonymous(); // Allow access without auth for direct file links
+            return Results.File(stream, "application/pdf", fileName);
+        }).WithName("GetLeaveAttachment");
 
         // DELETE /api/leaves/{id}/cancel - Cancel a pending leave request
         leavesGroup.MapDelete("/{id:guid}/cancel", async (
             Guid id,
             ClaimsPrincipal user,
             LeaveService leaveService,
+            IFileStorageService fileStorage,
             CancellationToken cancellationToken) =>
         {
             var userId = GetUserId(user);
             try
             {
                 var cancelled = await leaveService.CancelLeaveAsync(id, userId, cancellationToken);
+
+                // Clean up attachment file if exists
+                if (!string.IsNullOrWhiteSpace(cancelled.AttachmentUrl))
+                {
+                    // Extract filename from URL like "/api/leaves/files/{fileName}"
+                    var fileName = Path.GetFileName(cancelled.AttachmentUrl);
+                    await fileStorage.DeleteAsync(fileName, cancellationToken);
+                }
+
                 return Results.Ok(new { message = "Leave request cancelled", cancelled });
             }
             catch (KeyNotFoundException)
             {
-                return Results.NotFound("Leave request not found.");
+                return Results.NotFound(new { message = "Leave request not found." });
             }
             catch (InvalidOperationException ex)
             {
-                return Results.BadRequest(ex.Message);
+                return Results.BadRequest(new { message = ex.Message });
             }
         }).WithName("CancelLeave");
 
@@ -218,6 +182,7 @@ public static class LeaveEndpoints
             ReviewLeaveRequestDto request,
             ClaimsPrincipal user,
             LeaveService leaveService,
+            IFileStorageService fileStorage,
             CancellationToken cancellationToken) =>
         {
             var reviewerUserId = GetUserId(user);
@@ -229,30 +194,41 @@ public static class LeaveEndpoints
 
             if (request.RejectionReason?.Length > 500)
             {
-                return Results.BadRequest("Rejection reason cannot exceed 500 characters.");
+                return Results.BadRequest(new { message = "Rejection reason cannot exceed 500 characters." });
             }
 
             try
             {
+                // Get the leave request first to check for attachment
+                var existingRequest = await leaveService.GetLeaveRequestByIdAsync(id, cancellationToken);
+
                 var leaveRequest = await leaveService.ReviewLeaveAsync(
                     id,
                     reviewerUserId,
                     request.Approve,
                     request.RejectionReason?.Trim(),
                     cancellationToken);
+
+                // If rejected, clean up the attachment file
+                if (!request.Approve && existingRequest != null && !string.IsNullOrWhiteSpace(existingRequest.AttachmentUrl))
+                {
+                    var fileName = Path.GetFileName(existingRequest.AttachmentUrl);
+                    await fileStorage.DeleteAsync(fileName, cancellationToken);
+                }
+
                 return Results.Ok(leaveRequest);
             }
             catch (KeyNotFoundException)
             {
-                return Results.NotFound("Leave request not found.");
+                return Results.NotFound(new { message = "Leave request not found." });
             }
             catch (InvalidOperationException ex)
             {
-                return Results.BadRequest(ex.Message);
+                return Results.BadRequest(new { message = ex.Message });
             }
             catch (ArgumentException ex)
             {
-                return Results.BadRequest(ex.Message);
+                return Results.BadRequest(new { message = ex.Message });
             }
         }).WithName("ReviewLeaveRequest");
 
@@ -267,24 +243,24 @@ public static class LeaveEndpoints
 
             if (request.Year < 2000 || request.Year > 2100)
             {
-                return Results.BadRequest("Invalid year. Must be between 2000 and 2100.");
+                return Results.BadRequest(new { message = "Invalid year. Must be between 2000 and 2100." });
             }
 
             if (request.TotalSickLeave.HasValue && request.TotalSickLeave < 0)
             {
-                return Results.BadRequest("Total sick leave cannot be negative.");
+                return Results.BadRequest(new { message = "Total sick leave cannot be negative." });
             }
             if (request.UsedSickLeave.HasValue && request.UsedSickLeave < 0)
             {
-                return Results.BadRequest("Used sick leave cannot be negative.");
+                return Results.BadRequest(new { message = "Used sick leave cannot be negative." });
             }
             if (request.TotalCasualLeave.HasValue && request.TotalCasualLeave < 0)
             {
-                return Results.BadRequest("Total casual leave cannot be negative.");
+                return Results.BadRequest(new { message = "Total casual leave cannot be negative." });
             }
             if (request.UsedCasualLeave.HasValue && request.UsedCasualLeave < 0)
             {
-                return Results.BadRequest("Used casual leave cannot be negative.");
+                return Results.BadRequest(new { message = "Used casual leave cannot be negative." });
             }
 
             try
@@ -301,11 +277,11 @@ public static class LeaveEndpoints
             }
             catch (ArgumentException ex)
             {
-                return Results.BadRequest(ex.Message);
+                return Results.BadRequest(new { message = ex.Message });
             }
             catch (InvalidOperationException ex)
             {
-                return Results.BadRequest(ex.Message);
+                return Results.BadRequest(new { message = ex.Message });
             }
         }).WithName("AdjustLeaveBalance");
     }

@@ -73,6 +73,10 @@ builder.Services.AddScoped<TaskService>();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddHttpClient();
 
+// Register FileStorage options and service
+builder.Services.Configure<FileStorageOptions>(builder.Configuration.GetSection(FileStorageOptions.SectionName));
+builder.Services.AddScoped<IFileStorageService, LocalFileStorageService>();
+
 // Register email service based on configuration
 var emailProvider = builder.Configuration["Email:Provider"]?.ToLowerInvariant() ?? "mailtrap";
 if (emailProvider == "mailgun")
