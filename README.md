@@ -93,10 +93,12 @@ D:\All Codes\Projects\HRM-Api\
 - `GET /balance` `[Auth]` — Get current user's leave balance
 - `GET /my-history` `[Auth]` — Get user's leave application history
 - `POST /apply` `[Auth]` — Submit new leave application
-  - Validates: end >= start, no overlap with pending/approved leaves, sufficient balance
+  - Validates: end >= start, no overlap with pending/approved leaves, sufficient balance, **mandatory reason (max 500 chars)**
 - `DELETE /{id}/cancel` `[Auth]` — Cancel own pending leave request
-- **Admin** `GET /admin/pending` `[HrOrAdmin]` — List all pending requests
-- **Admin** `POST /admin/{id}/review` `[HrOrAdmin]` — Approve/reject leave request
+- `POST /upload` `[Auth]` — Upload PDF attachment (max 5MB, PDF only)
+- `GET /files/{fileName}` — Download uploaded PDF (public access for direct links)
+- **Admin** `GET /admin/pending` `[HrOrAdmin]` — List all pending requests (with optional status filter)
+- **Admin** `POST /admin/{id}/review` `[HrOrAdmin]` — Approve/reject leave request (reject requires reason)
 - **Admin** `POST /admin/balance/adjust` `[SuperAdmin]` — Adjust user's leave balance
 
 ### Task Management (`/api/tasks`)
